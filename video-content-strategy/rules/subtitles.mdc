@@ -1,0 +1,98 @@
+---
+alwaysApply: false
+---
+
+# Argument-Coded Subtitles
+
+Channel-permanent subtitle track per Director's Sheet §6. **Do not** add per-act `SubtitleTrack` + runtime SRT `fetch`/`delayRender` in `Act*.tsx`.
+
+## Architecture
+
+| Layer    | Path                           | Role                                                                |
+| -------- | ------------------------------ | ------------------------------------------------------------------- |
+| Types    | `scenes/_subs/_types.ts`       | `SubChunk`, `EmphasisRange`, `SubsFile`                             |
+| Data     | `scenes/_subs/{actId}.subs.ts` | Frame-accurate chunks + phrase emphases                             |
+| Renderer | `scenes/_subtitles.tsx`        | `<EduSubtitles actId="…" />` — register act in `SUBS_BY_ACT`        |
+| Act      | `ActN.tsx`                     | One line: `<EduSubtitles actId="actN" />` inside scaled design root |
+
+Reference implementations: `open.subs.ts`, `act4.subs.ts`, `act5.subs.ts`. Cascade uses the same pattern in `3-the-cascade/scenes/_subtitles.tsx`.
+
+## Creating subtitles for a new act
+
+### 1. Timing source
+
+- Prefer **SRT** at `my-video/public/projects/{project}/transcripts/*.srt` (or word-level JSON if available).
+- Slice to the act window using `ACTN_AUDIO_START_SECONDS` / `ACTN_AUDIO_END_SECONDS` from `scenes/actN/timing.ts`.
+- Convert times to **act-local seconds** (subtract audio start). `startFrame` / `endFrame` = `Math.round(sec * 60)` @ 60fps.
+
+### 2. Chunking (dense rhythm)
+
+- One SRT cue → one chunk (micro-beat). Do **not** merge long narration into single subtitles.
+- Target readable line length; use font ladder to shrink long lines (see below).
+- Neutral connective clauses may use `emphases: []`.
+
+### 3. Phrase-level emphasis (required)
+
+Highlight **only argument-bearing phrases**, never the full chunk.
+
+```typescript
+// ❌ Whole-line emphasis
+emphases: [{ startInChunk: 0, endInChunk: text.length, type: "tension" }],
+
+// ✅ Phrase-level (like open.subs.ts)
+text: "功能一 组块安装",
+emphases: [
+  { startInChunk: 0, endInChunk: 3, type: "system" },   // "功能一"
+  { startInChunk: 4, endInChunk: 8, type: "insight" }, // "组块安装"
+],
+```
+
+`startInChunk` / `endInChunk` are **char offsets** in `text` (inclusive start, exclusive end). Multiple non-overlapping ranges per chunk are encouraged.
+
+### 4. Emphasis roles (semantic palette)
+
+| `type`    | Color role | Use for                                                                   |
+| --------- | ---------- | ------------------------------------------------------------------------- |
+| `system`  | steel blue | Taxonomy labels, function IDs, neutral structure ("八个功能", "历史审计") |
+| `tension` | amber      | Modern/institutional strain (考试, 内卷, 标准化, 现代学校, 劳动力)        |
+| `insight` | cyan-green | Core mechanism / ancient four (组块, 协议, 文化, 人格, 能力传递, 跨代)    |
+
+When auto-tagging from SRT text, prefer **shortest matching phrase** inside the chunk; add manual overrides for high-stakes lines. Exposition without argument load → no emphasis.
+
+### 5. Font size ladder
+
+| Chars in `text` | `fontSize` |
+| --------------- | ---------- |
+| ≤6              | 56         |
+| ≤10             | 52         |
+| ≤16             | 48         |
+| ≤22             | 44         |
+| ≤30             | 40         |
+| >30             | 36         |
+
+Set `overflow: true` only if a chunk still exceeds comfortable width at 36px.
+
+### 6. Wire-up checklist
+
+1. Add `ACTN_SUBS` export in `scenes/_subs/actN.subs.ts`.
+2. Import and register in `SUBS_BY_ACT` in `scenes/_subtitles.tsx`.
+3. In `ActN.tsx`: `import { EduSubtitles } from "./scenes/_subtitles"` and render `<EduSubtitles actId="actN" />`.
+4. Remove legacy `SrtSubtitleTrack`, `parseActNSrt`, and act-local `SubtitleTrack` if present.
+5. Preview act — verify fade timing, phrase colors, and no missing `actId` key.
+
+## Renderer contract (locked)
+
+Do not change without Director's Sheet update:
+
+- Position: bottom-center, `y = 950` (1080 logical)
+- Width: 82% of frame; Noto Serif SC; body 500 / emphasis 700
+- Fade: 8f in (lead 6f), 12f out (trail 6f)
+- NC window: pass `inNCWindow` to hold text and drop scrim (same flag as cinema NC beats)
+
+## Anti-patterns
+
+- Runtime SRT parsing in composition components
+- Whole-chunk `emphases` spanning entire `text.length`
+- Sans/local `SubtitleTrack` duplicate of `EduSubtitles` styling
+- Sentence-sized chunks when SRT already provides beat-level cues
+- Registering subs under a different `actId` than `<EduSubtitles actId="…" />`

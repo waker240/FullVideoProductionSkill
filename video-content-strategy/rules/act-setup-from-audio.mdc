@@ -1,0 +1,903 @@
+---
+alwaysApply: false
+---
+
+# Setting Up a Video Project From Per-Act Audio
+
+End-to-end workflow for standing up a new episode project from raw per-act
+audio: transcribe → build subtitles → fix transcription errors → scaffold
+per-act compositions (background + terrain + particles + subtitles) → register
+→ verify. Distilled from the `7-education-ep3` (ep7), `11-education-ep4`
+(ep4), and `13-wittgenstein-ai` (#13, prosody + dramatic beats) builds,
+modeled on `6-time-money` (#6) and `5-education-ep2` (ep2).
+
+> #13 (`13-wittgenstein-ai`) is the reference for **segment-level prosody**
+> (per-`**bold**` pitch/rate), **`[停顿]`-driven baked silence**, the **dramatic
+> setup→reveal beat**, and **display-only em-dash stripping** — all documented
+> in Step 0e-bis + Phase 2 below. Use its `scripts/tts-wittgenstein.js` as the
+> prosody-aware TTS template (the ep4 `tts-ep4.js` template is prosody-free).
+
+Two audio source paths are now supported:
+- **Audio given** — raw per-act MP3/WAV handed to you (ep2, ep3).
+- **TTS-generated** — narration script → Edge TTS → per-chunk MP3s → concat → WAV (ep4).
+
+Both paths converge at the same STT → subs → Remotion pipeline from Phase 1 onward.
+
+> Companion docs: `.cursor/rules/subtitles.md` (authoritative subtitle
+> pipeline + locked renderer contract), `.cursor/rules/chunks.md` (write code
+> in chunks). Read both before starting.
+
+## What you end up with (file map)
+
+```
+my-video/
+├── public/projects/<project>/
+│   ├── <narration>.md                # authoritative narration (given or written)
+│   ├── tts_chunks/{actId}/           # TTS path only — per-chunk mp3 + txt + chunks.json
+│   ├── {actId}.mp3                   # per-act MP3 — STT source (given or TTS-concat)
+│   ├── {actId}.wav                   # delay-free WAV — what compositions PLAY
+│   ├── words/{actId}.words.json      # STT word-level timing (Phase 1)
+│   ├── transcripts/{actId}.{srt,txt} # STT transcripts (Phase 1)
+│   └── subs/{actId}.subs.json        # built subs, inspection copy (Phase 2)
+├── scripts/
+│   ├── tts-<project>.js              # TTS path — chunks narration + calls Edge TTS
+│   │                                 #   (prosody path: split on **bold**, per-segment
+│   │                                 #    pitch/rate, joinBeat, baked [停顿] silence)
+│   ├── concat-<project>-audio.js     # TTS path only — stitches chunks → MP3 + WAV
+│   ├── transcribe-<project>.js       # Phase 1 — uploads WAV to Whisper
+│   ├── fix-<project>-actN-tail.js    # Phase 1 — tail-truncation splice (dynamic OFFSET)
+│   ├── build-<project>-subs.js       # Phase 2 — aligns timing + builds subs
+│   └── check-<project>-subs.js       # Phase 2 validation (monotonic sweep)
+└── src/projects/<project>/
+    ├── theme.ts  Particles.tsx  LowPoly.tsx
+    ├── SceneShell.tsx                 # shell chrome + audio + ambient + subs
+    ├── acts.ts                        # FPS, intro/tail frames, AUDIO_LEN_SEC, actDuration()
+    ├── Open.tsx  Act1.tsx..ActN.tsx   # one composition per act
+    └── scenes/
+        ├── _subtitles.tsx             # <EduSubtitles> renderer
+        └── _subs/
+            ├── _types.ts
+            └── {actId}.subs.ts        # AUTO-GENERATED — never hand-edit
+```
+
+Source files are also registered in `src/Root.tsx` (Phase 4). MP3s are kept
+(scripts reference them); compositions play the WAVs.
+
+> **Local TTS server (prosody path).** The Edge TTS MCP runs from
+> `MCPs/tts/index.js` on `localhost:3100`. To support `rate`/`pitch`/`volume`
+> it was edited to forward those to `edge-tts-universal`'s `ProsodyOptions`
+> (and exposed in the `tts_synthesize` zod schema + the `/api/tts/synthesize`
+> REST route). If you re-clone or reset that server, re-apply that change or
+> per-segment prosody silently no-ops.
+
+## Decide the track shape first (this drives everything)
+
+| Audio layout            | Reference                            | Pipeline                                                                                                                              |
+| ----------------------- | ------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------- |
+| **One continuous file** | `6-time-money`                       | single `words.json`, one track `actId:"full"`, acts play **slices** via `<Audio startFrom/endAt>` + `frameOffset`/window on subtitles |
+| **One file per act**    | `5-education-ep2`, `7-education-ep3`, `11-education-ep4`, `13-wittgenstein-ai` | one `words.json` **per act**, one subtitle track per `actId`, each act plays its file **WHOLE** (no slicing)          |
+
+Pick the shape that matches the audio you were handed. ep7/ep4 had per-act files
+so they use the per-act model (ep2 plumbing) while borrowing #6's visual register.
+
+Even when the audio is per-act, you still **mix two references**:
+
+- **Visual register / look** → copy from `6-time-money` (hero desk image,
+  terrain, particles, chapter-title intro, 1440×1080 @ 60fps spec).
+- **Subtitle plumbing** → copy from `5-education-ep2` (per-act `SUBS_BY_ACT`,
+  simple `actId` prop, no `frameOffset`/window machinery).
+- **Auto-emphasis** (only if the narration is PLAIN / has no `[强调]` tags) →
+  copy `autoTagEmphases()` + `EMPHASIS_KEYWORDS` from
+  `build-timemoney-subs.js`. If the narration already carries `[强调]` tags,
+  use the tag-driven path from `build-eduEp2-subs.js` instead.
+
+## ⚠️ The MP3 playback trap (read this — it bites every time)
+
+**Remotion compositions must play WAV, not MP3.** MP3 carries encoder
+delay/padding (a non-zero `start_time`, e.g. `0.025057`) and has coarse seek
+granularity. When an act plays its audio inside `<Sequence from={120}>` (the
+2-second chapter-title intro), Remotion seeks into the MP3, lands just before
+the true start, and **replays the head of the file** — you hear the first
+phrase, it repeats, then continues normally.
+
+This is NOT a code bug and NOT a corrupt audio file — the file is fine; it's
+the format. #6 dodges this by rendering from a WAV master and using MP3 only
+for transcription.
+
+**Fix:** convert each per-act file to a delay-free WAV and point the
+compositions at the WAV. Keep the MP3s — the transcribe/build scripts still
+reference them.
+
+```bash
+for f in act_cold act_1 act_2 act_3 act_4; do
+  ffmpeg -y -i "public/projects/<project>/$f.mp3" \
+    -ar 48000 -ac 2 -c:a pcm_s16le \
+    "public/projects/<project>/$f.wav" -loglevel error
+done
+# verify start_time is gone (prints N/A for WAV):
+ffprobe -v error -show_entries stream=start_time \
+  -of default=noprint_wrappers=1:nokey=1 public/projects/<project>/act_1.wav
+```
+
+Then set every `<SceneShell audioPath="…">` to the `.wav`. WAVs are tracked
+via **Git LFS** (`.gitattributes: *.wav filter=lfs`), so a multi-hundred-MB
+master won't bloat the repo — confirm with `git check-ignore` /
+`git check-attr filter <file>` before committing.
+
+> Diagnostic shortcut: if a user reports "the audio repeats the first phrase
+> then plays normally," it's almost always this. Check `ffprobe … start_time`
+> on the MP3; if non-zero, convert to WAV. The transcript/`words.json` starting
+> cleanly (single occurrence) confirms the content is fine and the artifact is
+> playback-only.
+
+## Phase 0 (TTS path only) — Script preparation + TTS generation
+
+Skip this phase entirely if you have real recorded audio. Use this path when
+generating audio from a written narration script using Edge TTS.
+
+### Step 0a — Prepare the narration for speech
+
+Before generating TTS, the script must be edited for speech flow. Written
+prose and spoken audio have different requirements — what reads well on screen
+sounds broken when spoken aloud.
+
+**Common issues to fix:**
+
+1. **Staccato fragments** — short standalone sentences separated by periods
+   that TTS reads as complete stops with long silences between them. Merge into
+   flowing prose joined by commas, em-dashes, or conjunctions.
+
+   ```
+   ❌  你烧掉的十几年。退不回来的年华。
+       你签在纸上的那个名字。一具能被问责、能被开除的肉身。
+
+   ✓   你烧掉的十几年，退不回来的年华；你签在纸上的那个名字，
+       一具能被问责、能被开除的肉身；...
+   ```
+
+2. **List items as periods** — lists where each item ends with `。` get read as
+   separate sentences with full stops. Use `；` between items and `。` only at
+   the end of the full list, or join with `、` for short items.
+
+3. **Very short paragraphs** — a single sentence paragraph surrounded by blank
+   lines causes TTS to insert a long pause before and after. Merge with the
+   surrounding paragraph unless the pause is intentional (e.g. `[停顿]`).
+
+4. **Markdown bold** — `**text**` markers have TWO possible roles depending on
+   the TTS template:
+   - **Prosody-free path (ep4):** `**` is stripped for TTS by `stripMarkdown()`
+     and stripped for display in the build script. On-screen emphasis comes
+     only from `EMPHASIS_KEYWORDS` auto-tagging; the `**` markers are inert.
+   - **Prosody path (#13):** `**bold**` spans are the author's dramatic beats
+     and are REPURPOSED as per-segment audio prosody (see Step 0e-bis). The TTS
+     script splits each chunk on `**` and synthesizes the bold span as its own
+     Edge TTS call at a lower pitch / slower rate. They are STILL stripped for
+     on-screen display; subtitle emphasis is still keyword-driven, independent
+     of `**`.
+
+5. **Pause markers** — `[停顿]` and `[长停顿]` again have two roles:
+   - **Prosody-free path (ep4):** stripped by `stripMarkdown()`, do NOT affect
+     TTS timing — natural pauses come from punctuation only.
+   - **Prosody path (#13):** they are FLOW CONTROL. The TTS script turns each
+     into a forced chunk boundary with baked-in trailing silence (`[停顿]`
+     ≈ 180ms, `[长停顿]` ≈ 450ms) appended to the preceding chunk's mp3. They
+     are still stripped from spoken text and from the display text, but the
+     silence is real audio. This is how you honor the script's authored pacing
+     when the source is TTS rather than a human narrator.
+
+**Rule of thumb:** read each paragraph aloud before chunking. If you naturally
+pause mid-sentence because of a period, that period needs to become a comma.
+
+### Step 0b — Section heading normalization
+
+Section headings can contain curly quotes (`"认知"`) that break JS string
+literal matching. Always normalize heading lookup with:
+
+```js
+function normalizeHeading(s) {
+  return s
+    .replace(/\u201c/g, '"').replace(/\u201d/g, '"') // " " → "
+    .replace(/\u2018/g, "'").replace(/\u2019/g, "'") // ' ' → '
+    .trim();
+}
+// Build lookup map with normalized keys
+const SECTION_TO_ACT = {};
+for (const [k, v] of Object.entries(SECTION_TO_ACT_RAW)) {
+  SECTION_TO_ACT[normalizeHeading(k)] = v;
+}
+// Look up with normalization
+const actId = SECTION_TO_ACT[normalizeHeading(section.title)];
+```
+
+This is critical — a heading mismatch silently produces zero chunks for that
+act with no error.
+
+### Step 0c — Pronunciation substitutions (polyphone handling)
+
+Chinese has many polyphonic characters (多音字) — characters with two or more
+valid pronunciations. TTS models default to the most statistically common
+reading, which is often wrong for specialized vocabulary.
+
+**How to fix:** before sending text to TTS, substitute the problematic
+character with a homophone that has only one reading. The substitution is
+TTS-only — the displayed subtitle text uses the original correct character
+(stored separately in `displayText` vs `ttsText`).
+
+**Pattern:**
+
+```js
+const PRONUNCIATION_SUBS = [
+  // [text-to-replace, replacement-for-TTS-only]
+  // Order: longer/more-specific patterns first
+  ["重装税",   "崇装税"],   // 重 here = chóng (reinstall), not zhòng (heavy)
+  ["重装成本", "崇装成本"],
+  ["每代重装", "每代崇装"],
+  ["重装",     "崇装"],     // catch-all last
+];
+```
+
+**Substitution logic:**
+- Find a homophone with the correct pronunciation and no ambiguity.
+- The substituted character should be rare enough that it won't appear
+  naturally in the narration (to avoid false positives).
+- After TTS generates the audio, the `chunks.json` manifest stores BOTH the
+  `ttsText` (sent to TTS) and `displayText` (shown on screen) for each chunk.
+
+**Common polyphones to watch for:**
+
+| Character | Wrong default | Correct in context | Fix |
+|-----------|--------------|-------------------|-----|
+| 重 | zhòng (heavy) | chóng (re-, again) | 崇 |
+| 长 | cháng (long) | zhǎng (grow/chief) | depends on context |
+| 行 | xíng (walk/OK) | háng (row/trade) | 杭 or 航 |
+| 的 | de (particle) | dí (target) | context usually fine |
+| 中 | zhōng (middle) | zhòng (hit/be affected) | depends |
+| 处 | chǔ (handle) | chù (place) | depends |
+
+When reviewing TTS output: if a word sounds wrong, it's almost always a
+polyphonic character. Identify the correct pinyin, find a homophone substitute,
+add it to `PRONUNCIATION_SUBS`, regenerate that chunk only with `--act X --chunk N`.
+
+### Step 0d — TTS chunking strategy
+
+The TTS script splits narration into ~280-char chunks per act. Key rules:
+
+**Chunk size:** ~280 chars soft target, 350 hard max. This balances:
+- Avoiding TTS timeout/quality degradation on very long inputs
+- Avoiding excessive silence and unnatural pacing on very short inputs
+- Enabling surgical regeneration of individual chunks after edits
+
+**Break priority order:**
+1. Hard sentence-end punctuation: `。！？!?` (include the punctuation in the chunk)
+2. Em-dash pair: `——`
+3. Soft punctuation: `，、：；,;:`
+4. Fallback: cut at soft max
+
+**Merge tiny trailing chunks:** chunks under 20 chars get merged into the
+previous chunk. Avoids TTS generating a tiny file for a sentence fragment.
+
+**Per-chunk output:**
+```
+tts_chunks/{actId}/
+  chunk-000.mp3    ← TTS audio
+  chunk-000.txt    ← ttsText sent to TTS (with substitutions applied)
+  chunks.json      ← manifest: [{idx, ttsText, displayText, file}]
+```
+
+The manifest is what makes surgical regeneration possible. To regenerate a
+single chunk after a narration edit:
+```bash
+node scripts/tts-<project>.js --act act3 --chunk 7 --force
+node scripts/concat-<project>-audio.js act3
+node scripts/transcribe-<project>.js act3
+node scripts/build-<project>-subs.js
+```
+
+### Step 0e — TTS MCP
+
+The TTS MCP is at `http://localhost:3100/mcp`. Tool name: `tts_synthesize`.
+
+```js
+// SSE-based HTTP call (not standard fetch — needs Accept header)
+const body = JSON.stringify({
+  jsonrpc: "2.0", id: Date.now(), method: "tools/call",
+  params: {
+    name: "tts_synthesize",
+    arguments: { text, voice: "zh-CN-YunyangNeural", output_path: chunkPath }
+  }
+});
+// Headers required:
+//   Content-Type: application/json
+//   Accept: application/json, text/event-stream
+// Parse SSE response: lines starting with "data: " contain the JSON result
+```
+
+Voice: `zh-CN-YunyangNeural` — male, authoritative, suitable for educational
+narration. Add a 100ms delay between calls to avoid hammering the service.
+
+**⚠️ Inline `<prosody>` SSML does NOT work — it is spoken LITERALLY.** The Edge
+TTS MCP escapes your text into its own SSML wrapper, so a tag like
+`<prosody pitch="+15Hz" rate="-15%">重要</prosody>` comes out of the voice as
+the spoken words "prosody pitch 等于 加 15Hz rate 等于…". Verified on #13. Do
+NOT try to inject per-word SSML into the `text` argument.
+
+**What DOES work (whole-utterance prosody params).** The local MCP server
+(`MCPs/tts/index.js`) was extended to forward `rate` / `pitch` / `volume` to
+`edge-tts-universal`'s `ProsodyOptions` (the lib supports them; the server just
+wasn't passing them). The `tts_synthesize` tool now accepts:
+
+```js
+arguments: {
+  text, voice: "zh-CN-YunyangNeural", output_path,
+  rate: "-15%",   // explicit Edge rate string (takes precedence over `speed`)
+  pitch: "-6Hz",  // whole-utterance pitch shift
+  volume: "+0%",  // whole-utterance volume
+}
+```
+
+These apply to the WHOLE call. To vary prosody WITHIN a sentence you must split
+the sentence into separate TTS calls and stitch them (Step 0e-bis). If you
+restart the TTS server to pick up server-side edits, launch it as a persistent
+background process (it dies when a transient shell session ends) and confirm
+`GET /health` returns `{"status":"ok"}` before generating.
+
+### Step 0e-bis — Segment-level prosody + dramatic beats (#13 prosody path)
+
+When the narration carries `**bold**` dramatic beats and you want them AUDIBLE
+(not just colored on screen), use the #13 model: synthesize each chunk as a
+sequence of SEGMENTS and concatenate, instead of one flat TTS call.
+
+1. **Split each chunk on `**`** into alternating normal / emphasized segments.
+2. **Synthesize each segment separately** — emphasized segments get
+   `EMPHASIS_PROSODY` (#13 used `{ rate: "-10%", pitch: "-6Hz" }` for a
+   weightier, leaned-in delivery); normal segments get default prosody.
+3. **Trim + beat the inner joins, then concatenate** (see the join logic below).
+4. **Append `[停顿]` silence** to the last segment if the chunk ends on a pause
+   marker.
+
+**⚠️ The "No audio was received" trap.** Splitting on `**` can leave a segment
+that is ONLY punctuation (e.g. a lone `。` after `**生活形式**`). Edge TTS
+returns "No audio was received" for a non-speakable segment and the chunk
+fails. FIX: in `parseSegments()`, merge any segment with no
+`[\u3400-\u9fff0-9A-Za-z]` char into its neighbor (it keeps the neighbor's
+prosody; trailing punctuation is inaudible anyway). Also wrap each TTS call in
+a small retry (`ttsSynthesizeRetry`, 2 tries) for transient blips.
+
+**⚠️ The dramatic setup→reveal beat (the #13 "rushed reveal" bug).** Edge TTS
+pads each segment with ~0.2–0.3s lead and ~0.5–0.7s trailing silence. If you
+naively trim every inner join flat (~70ms), you DELETE exactly the dramatic
+pause before a reveal — `标题就四个字——言尽意论` / `没有争议：言…` sound rushed
+and unnatural (this was the user-reported regression on #13). FIX: trim each
+inner join tight to kill Edge's variable padding, then APPEND a deliberate,
+contextual beat so the gap is guaranteed:
+
+```js
+// joinBeat(prevText, nextSeg) → seconds of silence appended at the join.
+// Take the MAX of the applicable signals so a reveal always gets its lean-in.
+const JOIN_BEAT_REVEAL = 0.32; // next segment is an emphasized reveal
+const JOIN_BEAT_SETUP  = 0.26; // prev segment ends with —— or ：/: (setup→reveal)
+const JOIN_BEAT_HARD   = 0.20; // prev ends 。！？ mid-chunk
+const JOIN_BEAT_SOFT   = 0.05; // prev ends ，、；  (keep tight, mid-clause split)
+// trim: INNER_TRIM_LEAD 0.03 on every non-first segment; tail trimmed tight
+// (0.04) on every non-last segment; chunk OUTER edges left untouched so the
+// chunk-to-chunk breath stays natural.
+```
+
+These four `JOIN_BEAT_*` constants at the top of the TTS script are the single
+pacing knob — tune them, regenerate, done. A segment join carrying a real beat
+measures ~0.39s of silence (vs the crushed ~0.07s) on `ffmpeg silencedetect`.
+
+**⚠️ Initials get read as letters.** A bare Latin initial in prose (e.g. "早期W"
+meaning 早期维特根斯坦) is spoken as the English letter "W" — jarring. Write the
+full name in the narration. (Initials inside a stripped `> 结构` blockquote are
+fine — they never reach audio.) After fixing, regenerate just that chunk:
+`node scripts/tts-<project>.js --act actN --chunk K --force`.
+
+### Step 0f — Concat chunks → per-act WAV
+
+Use ffmpeg concat demuxer to stitch all chunks in order:
+
+```js
+// Write concat list
+const listContent = chunkFiles.map(f => `file '${f}'`).join('\n');
+fs.writeFileSync(listPath, listContent);
+
+// Step 1: concat MP3s (kept for STT)
+execSync(`ffmpeg -y -f concat -safe 0 -i "${listPath}" -c copy "${mp3Out}"`);
+
+// Step 2: MP3 → delay-free WAV (the format Remotion plays)
+execSync(`ffmpeg -y -i "${mp3Out}" -ar 48000 -ac 2 -c:a pcm_s16le "${wavOut}"`);
+
+// Verify: start_time must be N/A
+execSync(`ffprobe -v error -show_entries stream=start_time ... "${wavOut}"`);
+```
+
+Always verify `start_time=N/A` on the output WAV before proceeding.
+
+### Step 0g — Master the per-act WAVs (loudness normalization)
+
+Raw TTS output is quiet and inconsistent across acts (#13 measured ~-26.8 LUFS
+integrated, but true peaks only ~-5.6 dBTP — a huge ~21 dB crest factor because
+the `[停顿]` pauses and dramatic beats pull the average down). Master each act
+to a consistent broadcast loudness so playback is even and platform-ready.
+
+Use the transparent profile script (highpass 80Hz + transient limiter + a
+**two-pass linear loudnorm**, NO compression/denoise):
+
+```bash
+SH=/Users/jingyu/.cursor/skills/audio-processing/master_to_wav.sh
+cd public/projects/<project>
+for a in open act1 act2 act3 act4 act5 act6 act7 outro; do
+  o=$(ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "$a.wav")
+  TARGET_I=-14 TARGET_TP=-1 TARGET_LRA=7 "$SH" "$a.wav" "/tmp/master/$a.wav"
+  m=$(ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "/tmp/master/$a.wav")
+  # CRITICAL: duration MUST be unchanged (subtitle timing + AUDIO_LEN_SEC depend on it)
+  node -e "process.exit(Math.abs($o-$m) > 0.01 ? 1 : 0)" || echo "  ⚠ $a DURATION DRIFT — do NOT swap"
+done
+# only after every act passes the duration check, swap the mastered files in:
+for a in open act1 act2 act3 act4 act5 act6 act7 outro; do cp "/tmp/master/$a.wav" "$a.wav"; done
+```
+
+**Targets & the "as loud as possible without distorting" reality.**
+- loudnorm + highpass + alimiter are all **duration-preserving**, so mastering
+  AFTER concat (and re-mastering after any audio edit) is safe — but ALWAYS
+  verify `durΔ < 0.01s` per act before swapping, or subtitle sync breaks.
+- A target of **-14 LUFS @ -1 dBTP** is the transparent sweet spot for this kind
+  of dynamic narration (and the de-facto YouTube/Bilibili playback target).
+- Asking for **-13 LUFS** on this material lands at ~-14 LUFS in transparent
+  mode — that's correct, not a failure. To force a true -13 under a -1 dBTP
+  ceiling, loudnorm would have to LIMIT ~9 dB of speech peaks, which is exactly
+  the crushing the transparent profile avoids. "As close as possible without
+  distorting" == ~-14 here. To go genuinely louder you'd raise `TARGET_TP` to
+  `-0.5`, or switch to a compressing (non-transparent) profile — both trade
+  away dynamics; only do it on explicit request.
+- `TARGET_LRA=7` (vs the script default 5) leaves the dramatic-beat dynamics
+  intact; tighten toward 5 only if an act feels too uneven.
+
+**Post-master verify (re-confirm the WAV contract after swap):**
+- `start_time=N/A` (loudnorm export stays clean — #13 confirmed).
+- format `48000 / 2ch / 24-bit` PCM — note the master script exports
+  **24-bit** (the concat step wrote 16-bit); both play fine in Remotion and
+  stay Git-LFS tracked.
+- spot-check integrated LUFS with
+  `ffmpeg -i <a>.wav -af loudnorm=I=-14:print_format=json -f null -`.
+- Mastering does NOT change durations, so `AUDIO_LEN_SEC` and the subtitles do
+  NOT need rebuilding — but if you mastered as part of an audio-content edit
+  (re-concat), the normal re-transcribe/rebuild still applies.
+
+## Phase 1 — Speech-to-text (timing only)
+
+The narration markdown is **authoritative for displayed text**; STT supplies
+**timing only**. Mishearings never reach the screen (fixed by construction in
+Phase 2).
+
+Adapt `scripts/transcribe-eduEp2.js` → `scripts/transcribe-<project>.js`:
+
+- Point `PROJECT_DIR` at the new project, `TARGETS` at the per-act WAV files.
+- Request `language:chinese, word_timestamps:true`.
+- `alignedAgainst` = the narration filename.
+
+Per act, emit (matching the ep2 schema):
+
+- `public/projects/<project>/words/{actId}.words.json` —
+  `{ source, durationSec, wordCount, alignedAgainst, words:[{word,start,end}] }`
+- `public/projects/<project>/transcripts/{actId}.{srt,txt}`
+
+**TTS-generated audio transcribes much cleaner than human narration.** Whisper
+mishearings are rarer because the voice is consistent, pronunciation is
+standard, and there are no fillers or disfluencies. The CONTEXTUAL_FOLDS table
+for TTS-sourced projects is shorter — mainly digit rendering and a few
+pronunciation-substitution reversals (e.g. fold `崇装` back to `重装` since the
+TTS substitution should not affect the subtitle alignment cursor).
+
+Notes:
+
+- The script and the Speech-to-Text MCP hit the same Whisper service
+  (`whisper-app-production-dc4b.up.railway.app`); either satisfies "use STT."
+  The script is usually the more reliable route for a batch of files. If you
+  use the MCP, still write the same `words.json`/srt/txt so the build script
+  can consume them.
+- Files <100MB upload directly. A very long act may hit a transient SSL error
+  — re-run that act alone.
+- Get **true** durations from the WAV: `ffprobe -v error -show_entries
+  format=duration -of default=noprint_wrappers=1:nokey=1 file.wav`
+  (VBR MP3 headers misreport; WAVs are accurate).
+- For TTS-sourced audio: `durationSec` from `words.json` ≈ WAV duration from
+  ffprobe. If they differ by more than 1s, re-check chunk concat order.
+
+### ⚠️ The Whisper tail-truncation trap (silently drops the last sentence)
+
+Symptom the user reports: *"the act ends abruptly before the last sentence is
+spoken"* / *"the final subtitle is cut off."* On long acts (>~5min) Whisper
+sometimes **stops transcribing several seconds early** and returns a `words.json`
+whose last word ends well before the WAV does. This is NOT a transient error —
+**re-running the full act transcription reproduces the same truncation.** It bit
+ep4 act5: words ended at 338.1s, WAV was 342.9s — the entire closing sentence
+was missing from `words.json`.
+
+Two downstream failures, both silent:
+1. The composition duration in `acts.ts` (`AUDIO_LEN_SEC`) inherits the
+   truncated `durationSec`, so the composition ends before the audio finishes —
+   the last sentence plays past the end and gets cut.
+2. The final-sentence subtitle chunks have no words to anchor to, so they fall
+   back to a bogus timestamp near the truncation point.
+
+**Detection (run after every transcribe):** compare `words.json` `durationSec`
+against the true WAV duration. A gap >1.5s on any act means truncation.
+
+```bash
+for a in open act1 act2 act3 act4 act5 act6 act7; do
+  wav=$(ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "public/projects/<project>/$a.wav")
+  dur=$(node -e "console.log(JSON.parse(require('fs').readFileSync('public/projects/<project>/words/$a.words.json')).durationSec)")
+  echo "$a  words=$dur  wav=$wav"
+done
+```
+
+**Fix (reliable for TTS-concatenated audio — chunk boundaries are known
+exactly):** transcribe the **final TTS chunk alone** (short clips don't
+truncate), offset its word timings to the chunk's WAV position, and splice them
+in over the truncated tail. **Compute the offset DYNAMICALLY** — durations shift
+on every regeneration, so a hardcoded number silently mis-times the spliced tail
+(this bit #13 when a beat-edit regen changed act3's length):
+
+```js
+const { execSync } = require("child_process");
+const ffdur = (p) => parseFloat(execSync(
+  `ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "${p}"`,
+  { encoding: "utf8" }).trim());
+// final chunk's WAV start = full act WAV duration − final chunk duration
+const OFFSET = +(ffdur(`${proj}/act3.wav`) - ffdur(`${proj}/tts_chunks/act3/chunk-034.mp3`)).toFixed(3);
+const head = main.filter(w => w.start < OFFSET);          // keep chunks 0..N-1
+const tail = chunkWords.map(w => ({                        // standalone re-transcribe
+  word: w.word, start: +(w.start + OFFSET).toFixed(3), end: +(w.end + OFFSET).toFixed(3),
+}));
+data.words = head.concat(tail);
+data.wordCount = data.words.length;
+data.durationSec = tail[tail.length - 1].end;              // now matches the WAV
+```
+
+Then **update `AUDIO_LEN_SEC[actId]` in `acts.ts`** to the new `durationSec` and
+rebuild subs. (For human-recorded audio there is no chunk to re-transcribe in
+isolation — instead clip the tail with ffmpeg `-ss`, transcribe the clip, and
+splice the same way.) NOTE: truncation is format/length-driven, not random — it
+RECURS on the same act after a regen, so re-check + re-splice every time.
+
+## Phase 2 — Build subtitles + fix transcription errors
+
+Create `scripts/build-<project>-subs.js` by combining:
+
+- the **per-act, multi-section** loop of `build-eduEp2-subs.js` (iterate each
+  `## ` section, align against that act's `words.json`, cursor resets per act;
+  `### ` subsection headings are scaffolding — skip the heading line, keep the
+  body), and
+- the **auto-emphasis** path of `build-timemoney-subs.js` if the narration is
+  plain (port `autoTagEmphases()` + a fresh `EMPHASIS_KEYWORDS` table).
+
+Also copy `scenes/_subs/_types.ts` from a reference project.
+
+**Map the narration's `## ` headings to actIds.** The build script needs an
+explicit `SECTION_TO_ACT` object keyed by the EXACT heading text (without the
+`## `). Get the headings with `grep -n "^## " <narration>.md`, then map each to
+its audio file's actId. Always use the normalizeHeading() pattern (see Phase 0b)
+— curly quotes in headings silently break the lookup. ep4's map:
+
+```js
+const SECTION_TO_ACT_RAW = {
+  "Cold Open（冷开场——拆包裹隐喻 + 去拟人化论点 + 问题重定向）": "open",
+  "Setup — 那些我们说过的，和没说的（连接前3集 + 尊重旧模型）": "act1",
+  "Movement 1 — 认知值钱，因为它是不可复制的": "act2",
+  'Movement 2 — 那份安排，从来没有在给"认知"定价': "act3",
+  // ...
+};
+const SECTION_TO_ACT = {};
+for (const [k, v] of Object.entries(SECTION_TO_ACT_RAW)) {
+  SECTION_TO_ACT[normalizeHeading(k)] = v;
+}
+```
+
+A typo or quote mismatch here means a whole act silently produces zero chunks —
+verify chunk counts per act after building.
+
+**Strip markdown formatting in `processBlock`.** The narration may contain
+`**bold**` markers for visual emphasis. These must be stripped before the
+display text is built — otherwise asterisks appear verbatim in on-screen
+subtitles. Add this at the top of `processBlock()`:
+
+```js
+function processBlock(blockText) {
+  // Strip markdown bold (**text** → text) before processing
+  const cleanedBlock = blockText.replace(/\*\*([^*]+)\*\*/g, "$1");
+  // ... rest of function uses cleanedBlock instead of blockText
+}
+```
+
+The `**` stripping only affects the displayed subtitle text. Emphasis on screen
+is driven by `EMPHASIS_KEYWORDS` auto-tagging — the `**` markers in the
+narration are irrelevant to the subtitle emphasis system.
+
+**Display-only punctuation strip (em dashes).** To clean the on-screen text
+without touching audio, word timing, or alignment, strip chars AFTER alignment
+but BEFORE emphasis is computed — right where each chunk's final `text` is set:
+
+```js
+for (const c of result.chunks) {
+  // Display-only: drop em dashes. They are non-canonical, so the alignment
+  // cursor already ignores them — this changes NOTHING in audio/timing.
+  // Strip BEFORE autoTagEmphases so emphasis offsets match the shown text.
+  c.text = c.text.replace(/—/g, "");
+  c.emphases = autoTagEmphases(c.text);
+}
+```
+
+This is the safe place for any display-only cleanup (em dashes on #13): it runs
+on the post-alignment text, so the monotonic sweep stays clean and only the
+build step needs re-running (no re-concat / re-transcribe). Order matters —
+strip first, THEN compute emphasis, or the colored-span offsets drift.
+
+**Frame geometry must match the project's frame**, not the reference script's.
+ep4/ep7 are 1440 wide (4:3) like #6, so use #6's width-driven ladder
+(`60/56/52/48/44/40`, default 60, slot ≈0.84 of 1440) — NOT ep2's 1920
+settings. Match whatever the renderer's `widthPct` is.
+
+Emit:
+
+- `public/projects/<project>/subs/{actId}.subs.json` (inspection)
+- `src/projects/<project>/scenes/_subs/{actId}.subs.ts` (Remotion runtime)
+
+### Emphasis (phrase-level only, never whole-line)
+
+Build an `EMPHASIS_KEYWORDS` table from the episode's actual argument
+primitives (read the narration). Semantic roles:
+
+- `insight` (cyan-green) — the model / resolution vocabulary.
+- `tension` (amber) — the problem being diagnosed.
+- `system` (steel blue) — cited thinkers, taxonomy labels, baseline quantities.
+
+Match shortest/most-specific first, non-overlapping (e.g. `延伸者` before
+`延伸`). Consistent recurring-primitive coloring is intentional — it's how the
+channel's chunks crystallize across the runtime. Exposition without argument
+load gets no emphasis.
+
+### Confusable-fold table = transcription-error correction
+
+Whisper mishears words and renders Chinese numerals as Arabic digits. Because
+alignment strips non-CJK chars, an unfolded `"2025"` collapses to nothing and
+the cursor loses its place. `CONTEXTUAL_FOLDS` maps **wrong (STT) form →
+narration's exact characters** so alignment lands correctly. Order longer
+patterns first. Categories that always need attention:
+
+- **Chinese numerals (critical):** scan the narration for EVERY spoken number
+  and fold it — years (`2025→二零二五`), percents/ages
+  (`16→十六`, `21→二十一`), decimals (`2.1→二点一`, `1.0→一点零`,
+  `13.3→十三点三`), big numbers (`150→一百五十`, `580→五百八十`).
+- **Traditional-variant emission:** Whisper intermittently emits Traditional
+  Chinese mid-stream. A single-char `SAFE_FOLDS` map (學→学, 這→这, 個→个,
+  讀→读, 紅樓夢→红楼梦, …) clears most "block-not-found" warnings. This was the
+  single biggest fix on ep7.
+- **Recurring-primitive homophones:** the core terms recur hundreds of times,
+  so one wrong fold costs many chunks. ep7 example: `主块/主快→组块` (~50× in
+  act1). Also `不可逆性睡→不可逆性税`, `竖感→数感`, inanimate `他→它` in
+  specific phrases.
+- **Proper nouns:** seed anchors (e.g. 柏拉图, 苏格拉底, 卡尼曼, 塞勒,
+  布林约尔松, 古德哈特, 斯坦福).
+
+When a future narration edit introduces a new mishearing, add a
+`["wrong","right"]` pair and rebuild. **Never hand-edit `{actId}.subs.ts`** —
+edit the narration or the build tables and regenerate.
+
+#### ⚠️ The homophone cursor-jump trap (the #1 subtitle bug — read this)
+
+This is the single most common alignment failure and it is **silent** — no
+build warning fires. Symptom the user reports: *"the subtitle doesn't show from
+phrase X onward"* or *"a whole paragraph is missing / blacked out"* or *"the
+subtitles jump ahead then come back."*
+
+**Mechanism.** Even on clean TTS audio, Whisper transcribes a character as its
+**homophone** (它/他, 集/级, 合上/和尚 — all valid same-sound readings). The
+narration chunk's literal prefix then can't match at its true position, so the
+aligner's fallback (a short 3–4 char prefix anchor) matches a **later,
+identical-looking phrase** instead. The cursor jumps forward — often tens of
+seconds — dragging an entire paragraph of chunks with it, colliding with later
+chunks and producing degenerate (zero-length) and out-of-order entries. Nothing
+renders for the displaced span.
+
+This bit ep4 in **four** places (one per act 3/4/5/6), all the same shape:
+
+| Act | STT heard | Narration | Displacement |
+|-----|-----------|-----------|--------------|
+| act4 | `第二级` | `第二集` | 第一样 paragraph (~40s) blacked out |
+| act5 | `他是一个招募` | `它是一个招募` | 招募 paragraph dragged ~37s forward |
+| act3 | `但他没有生命` | `但它没有生命` | 但它没有生命/所以… displaced |
+| act6 | `和尚`, `之前他吞掉` | `合上`, `之前它吞掉` | 空位期 paragraph jumped ~14s |
+
+**Fix recipe** (each fold verified safe — see below):
+1. Inspect the audio words around the gap:
+   `node -e 'JSON.parse(...words.json).words` … print words in the suspect
+   time window joined as a string. The mishearing is usually obvious.
+2. Confirm the STT form is **never legitimate narration** (count it across all
+   `words.json` AND in the narration `.md`). A fold is only safe if the wrong
+   form appears solely as the mishearing.
+3. Add a `CONTEXTUAL_FOLD` mapping the **STT form → narration's characters**.
+   Prefer the **longest specific phrase** (`他是一个招募`, not a bare `他→它`)
+   so the fold can't over-match elsewhere. Folds apply on the raw STT string
+   left-to-right, so a phrase fold like `之前他吞掉` works even when a broader
+   fold (`和尚→合上`) also fires in the same block.
+4. Rebuild and re-run the monotonic sweep (see Validate) until `nonmono:0`.
+
+**它→他 (inanimate referent) is the recurring offender** across every episode —
+TTS narration personifies abstractions ("它" = the pressure/system/arrangement)
+and Whisper writes the animate homophone. Seed the fold table with the specific
+它-phrases from the new narration up front.
+
+### Validate
+
+Create/run `scripts/check-<project>-subs.js` (adapt `check-timemoney-subs.js`).
+
+- **Real bugs → fix with folds:** multi-second overlaps, out-of-order chunks.
+- **Benign → leave:** 1–2s display gaps that coincide with real narration
+  pauses (renderer clears during silence), and sub-second overlaps within the
+  8f-in/12f-out fade window.
+
+**Always run the monotonic sweep after every build** — it catches the homophone
+cursor-jump trap (above) that produces no build warning. Three signals, all of
+which mean a cursor jumped:
+
+- **non-monotonic `startFrame`** — a chunk starts earlier than the one before it
+- **degenerate chunks** — `endFrame <= startFrame` (zero-length, invisible)
+- **suspiciously long single chunks** — one line spanning >6.5s usually means it
+  mis-anchored and got stretched by interpolation
+
+```js
+// scripts/check-<project>-subs.js — run across ALL acts, fail loud on anomalies
+const dir = "public/projects/<project>/subs";
+for (const f of fs.readdirSync(dir).filter(f => f.endsWith(".subs.json"))) {
+  const c = JSON.parse(fs.readFileSync(dir + "/" + f, "utf8")).chunks;
+  let bad = 0, prev = -1, badIdx = [];
+  c.forEach((x, i) => { if (x.startFrame < prev) { bad++; badIdx.push(x.chunkId); } prev = x.startFrame; });
+  const deg = c.filter(x => x.endFrame <= x.startFrame).length;
+  const long = c.filter(x => (x.endSec - x.startSec) > 6.5).map(x => x.chunkId);
+  console.log(f, "nonmono:" + bad, "degen:" + deg, "long:" + (long.join(",") || "-"),
+    badIdx.length ? "  jumps@" + badIdx.join(",") : "");
+}
+```
+
+A clean episode reads `nonmono:0 degen:0 long:-` on every act. Any non-zero
+value points at the exact chunk where a fold is needed.
+
+### Regenerate commands
+
+```bash
+# TTS path — full pipeline
+node scripts/tts-<project>.js                    # generate all chunks (skips existing)
+node scripts/tts-<project>.js --act act3 --chunk 7 --force  # regenerate one chunk
+node scripts/concat-<project>-audio.js           # stitch chunks → MP3 + WAV (all acts)
+node scripts/concat-<project>-audio.js act3      # one act only
+node scripts/transcribe-<project>.js             # upload WAVs to Whisper (all acts)
+node scripts/transcribe-<project>.js act3        # one act only
+
+# Both paths — subtitle rebuild (run after ANY narration or fold-table edit)
+node scripts/build-<project>-subs.js             # all acts
+node scripts/check-<project>-subs.js             # validation
+```
+
+## Phase 3 — Per-act compositions (background + terrain + particles + subs)
+
+Create `src/projects/<project>/` by copying #6's register:
+
+- `theme.ts` — re-export `COLORS, FONT` from `../the-filter/theme`; export
+  `FPS=60`, `LOGICAL_WIDTH`, `LOGICAL_HEIGHT`.
+- `Particles.tsx` — re-export from `../the-filter/Particles`.
+- `LowPoly.tsx` — copy #6's (`GlowFilters`, `terrainPoints`).
+- `SceneShell.tsx` — model on **ep2's** SceneShell (per-act: `actId` +
+  `audioPath` props, plays the whole file via `<Audio src={staticFile(audioPath)} />`,
+  **no slicing / frameOffset / window**), keeping #6's chrome: hero desk image
+  (`projects/the-migration/assets/cold-open/typography-v3/00-archive-table-top.png`),
+  `HeroBackdrop` + `HeroVignette`, `ChapterTitle` (88px amber hero, mono
+  kicker 0.18em, mono subtitle), `AmbientLayer` (terrain + particles) gated by
+  an `ambient` prop. Subtitles render via `<EduSubtitles actId={actId} />`
+  inside the post-intro `<Sequence from={chapterIntroFrames}>`.
+- `scenes/_subtitles.tsx` — model on **ep2's** renderer (per-act
+  `SUBS_BY_ACT = { open, act1, … }`, simple `actId` prop), keep the project's
+  locked frame spec (#6: y=950, widthPct 0.84, Noto Serif SC 500/700, 0.04em,
+  8f-in/12f-out fades, NC handling). In the per-act model each act's chunk
+  `startFrame`/`endFrame` are **act-local** (chunk frame 0 = that act's audio
+  onset). They stay in sync automatically because `<Audio>` and
+  `<EduSubtitles>` are both mounted inside the SAME
+  `<Sequence from={chapterIntroFrames}>`, so both share the act-local frame
+  origin — no `frameOffset` needed.
+- `acts.ts` — per-act: `FPS=60`, `CHAPTER_INTRO_FRAMES=120`, `TAIL_FRAMES=60`.
+  Durations come from each act's `words.json` last-word end (`durationSec`).
+  **`words.json` lives under `public/`, outside the src tsconfig include, so it
+  can't be imported** — copy each act's `durationSec` into a hardcoded
+  `AUDIO_LEN_SEC` map and compute `actDuration(actId,{intro})` =
+  `intro + ceil(AUDIO_LEN_SEC[actId]*FPS) + TAIL_FRAMES` (open passes
+  `intro:0`). Re-sync the map if audio is re-transcribed.
+- `Open.tsx`, `Act1.tsx`…`ActN.tsx` — each renders `<SceneShell>` with the
+  act's `actId`, `audioPath` (**.wav** — see the MP3 trap), `chapter` title,
+  and exports a `*_DURATION` const.
+
+### The opening-title / audio-delay contract (matches #6 + ep2)
+
+- **Cold open:** `chapterIntroFrames={0}` — audio fires at frame 0, the title
+  rides the live audio, hero image holds throughout.
+- **Acts 1..N:** `chapterIntroFrames={120}` + `ambient` — the chapter title
+  gets a solo **2-second** intro (120f @ 60fps); the hero image crossfades out
+  across the last 30f; audio + subtitles + ambient layer start in lockstep at
+  frame 120. This 120-frame `<Sequence from>` IS the "2s audio delay for the
+  title transition" — it applies to every act EXCEPT the cold open.
+
+For initial setup, acts need NO bespoke per-shot content — shell + terrain +
+particles + subtitles is the correct base. Leave `children` empty; author
+scenes later.
+
+## Phase 4 — Register + verify
+
+- Register every composition in `src/Root.tsx` following the existing
+  `TimeMoney-*` / `EduEp2-*` block (`width=1440 height=1080 fps=60`, durations
+  from the exported consts). Add imports alongside the sibling project.
+- Verify:
+  - `npx tsc --noEmit` in `my-video/` → fix all errors; `getDiagnostics` on new
+    files.
+  - `npx remotion compositions` → confirm all new ids register and build.
+  - `npx remotion still <Id> --frame=600` → confirms terrain + particles +
+    subtitles render at runtime. Clean up the temp PNG.
+- After repointing audio to WAV, reload Remotion studio (hard-refresh the
+  preview to clear cached audio).
+
+## Gotchas checklist
+
+### Audio / WAV
+- [ ] Compositions play **WAV**, not MP3 (the repeat-at-start trap).
+- [ ] `start_time` is `N/A`/zero on all WAVs (`ffprobe` to confirm).
+- [ ] Track shape matches audio layout (per-act vs single continuous).
+- [ ] Cold open `chapterIntroFrames=0`; all other acts `120`.
+- [ ] WAVs **mastered** (Step 0g) to ~-14 LUFS / -1 dBTP transparent, with `durΔ < 0.01s` per act verified BEFORE swapping (mastering must not move timing).
+- [ ] WAVs covered by Git LFS before committing.
+
+### TTS path (skip if audio was given)
+- [ ] Script edited for speech flow before chunking (staccato fragments merged, list periods → semicolons, very short paragraphs merged).
+- [ ] Decide the path: **prosody-free** (ep4 — `**`/`[停顿]` inert) vs **prosody** (#13 — `**`→audio emphasis, `[停顿]`→baked silence). Use `tts-wittgenstein.js` as the template for the prosody path.
+- [ ] `**bold**` handling matches the chosen path (inert-and-stripped, or split-into-prosody-segments-then-stripped-for-display).
+- [ ] `[停顿]` / `[长停顿]` handling matches the chosen path (inert, or forced chunk boundary + baked trailing silence ~180ms/450ms).
+- [ ] NO inline `<prosody>` SSML in the `text` arg — it is spoken literally. Use the MCP's `rate`/`pitch`/`volume` params (whole-utterance) + per-segment splitting for intra-sentence variation.
+- [ ] Prosody path: `parseSegments()` merges punctuation-only segments into a neighbor (avoids "No audio was received"); TTS calls wrapped in a retry.
+- [ ] Prosody path: inner segment joins trimmed tight THEN given a contextual `joinBeat` (~0.32s before a reveal, ~0.26s after ——/：) so setup→reveal beats aren't crushed. Verify with `ffmpeg silencedetect` (~0.39s at a reveal join).
+- [ ] No bare Latin initials in spoken prose (e.g. "早期W") — TTS reads them as letters; write the full name.
+- [ ] Every polyphonic character in key terms has a `PRONUNCIATION_SUBS` entry — `ttsText` uses the substitute, `displayText` uses the original.
+- [ ] Pronunciation substitutions reversed in `CONTEXTUAL_FOLDS` (so the alignment cursor matches the narration's original characters; fold BOTH the substitute char and any homophone Whisper emits for it, e.g. 属数/熟熟→数数).
+- [ ] Chunk manifest `chunks.json` saved per act (enables surgical regeneration).
+- [ ] WAV `start_time=N/A` confirmed after concat (not just assumed).
+- [ ] Inserted beats/silence GROW act durations — after any prosody/beat edit, re-run concat → transcribe → build, and re-sync `AUDIO_LEN_SEC`.
+
+### Build-subs script
+- [ ] Section heading lookup uses `normalizeHeading()` (curly quotes trap).
+- [ ] `processBlock()` strips `**...**` before building display text.
+- [ ] Frame geometry in the build script matches the project frame (1440 vs 1920).
+- [ ] Auto-emphasis only if narration is plain; tag-driven if it has `[强调]`.
+- [ ] Every spoken numeral has a CONTEXTUAL_FOLDS entry; longer patterns first.
+- [ ] Traditional→simplified `SAFE_FOLDS` map present if Whisper drifted (human audio).
+- [ ] Homophone folds seeded for inanimate `它→他` phrases + any 集/级, 合上/和尚-class same-sound mishearings (the silent cursor-jump trap). On a many-male-referent script (维特根斯坦/塞尔/哈纳德…) NEVER add a bare `他→它` — use the LONGEST specific phrase fold, and verify the wrong form is absent from the narration first.
+- [ ] Classical/idiom quotes folded if Whisper homophones them (#13: 得意忘言→德意妄言, 王弼→王毕, 荀粲→荀灿, 得鱼而忘筌→得鱼而忘全).
+- [ ] Display-only strips (em dashes) applied to `c.text` AFTER alignment but BEFORE `autoTagEmphases` (no audio/timing impact; only the build step re-runs).
+- [ ] **Monotonic sweep clean on EVERY act** — `nonmono:0 degen:0`, no >6.5s single chunks (catches the homophone cursor-jump trap that fires no warning).
+- [ ] Chunk counts per act verified after building (zero chunks = silent heading mismatch).
+- [ ] Never hand-edit `{actId}.subs.ts` — edit narration/tables, regenerate.
+
+### STT timing integrity
+- [ ] `words.json` `durationSec` ≈ true WAV duration on EVERY act (gap >1.5s = Whisper tail-truncation; splice the final chunk's standalone transcription).
+- [ ] Tail-splice script computes `OFFSET = ffdur(actWav) − ffdur(finalChunkMp3)` DYNAMICALLY (do NOT hardcode — durations shift every regeneration; a stale offset silently mis-times the spliced tail).
+- [ ] Tail-truncation can recur after a regen (it's format/length-driven, not random) — re-check + re-splice after every full regenerate, then rebuild.
+- [ ] After any re-transcribe or tail-splice, `AUDIO_LEN_SEC[actId]` in `acts.ts` re-synced to the new `durationSec`.
+
+### Generated assets (gpt-image-2 plates / cutouts)
+- [ ] Each installed asset matches its spec's **dimensions + aspect** (portrait plate is 1024×1536, not a landscape variant).
+- [ ] Register B parchment plates carry **NO magenta** (composited as documents); only Register A cutouts use `#FF00FF` chroma-key + `cutout-bg.js`.
+- [ ] The file copied into `assets/` is the CORRECT generation — when a batch produces several variants in `out/`, verify the installed one (dimensions, background, layout) rather than assuming.
+
+### Remotion project
+- [ ] `AUDIO_LEN_SEC` in `acts.ts` populated from `words.json` `durationSec` values.
+- [ ] All act compositions registered in `Root.tsx` with correct durations.
+- [ ] `npx tsc --noEmit` clean (deprecation warnings OK, type errors not).
+- [ ] `npx remotion compositions` lists all expected IDs with correct durations.
+- [ ] Still render at a mid-act frame confirms terrain + particles + subtitles render.
+- [ ] Temp still PNG cleaned up after verification.

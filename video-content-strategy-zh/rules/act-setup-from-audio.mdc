@@ -1,0 +1,634 @@
+---
+alwaysApply: false
+---
+
+# 从分幕音频搭建视频项目
+
+从原始的分幕（per-act）音频建立一个新分集项目的端到端工作流：转写 → 构建字幕 → 修正转写错误 → 搭建每一幕的构图（背景 + 地形 + 粒子 + 字幕）→ 注册 → 验证。此流程提炼自 `7-education-ep3`（ep7）、`11-education-ep4`（ep4）、`13-wittgenstein-ai`（#13，韵律 + 戏剧性节拍）几次构建，并以 `6-time-money`（#6）和 `5-education-ep2`（ep2）为范本建模。
+
+> #13（`13-wittgenstein-ai`）是**分段级韵律**（每个 `**加粗**` 对应的音高/语速）、**由 `[停顿]` 驱动的固化静音**、**戏剧性的铺垫→揭示节拍**，以及**仅用于显示层面的破折号剥离**的参考实现——全部记录在下方的 Step 0e-bis + Phase 2 中。将其 `scripts/tts-wittgenstein.js` 用作带韵律的 TTS 模板（ep4 的 `tts-ep4.js` 模板不含韵律）。
+
+目前支持两条音频来源路径：
+- **已给定音频** —— 已经拿到手的分幕原始 MP3/WAV（ep2、ep3）。
+- **TTS 生成** —— 口播稿 → Edge TTS → 逐段 MP3 → 拼接 → WAV（ep4）。
+
+从 Phase 1 开始，两条路径都汇入同一条 STT → 字幕 → Remotion 流水线。
+
+> 配套文档：`.cursor/rules/subtitles.md`（权威字幕流水线 + 锁定的渲染器约定）、`.cursor/rules/chunks.md`（分块写代码）。开始前请先阅读这两份文档。
+
+## 最终产出（文件地图）
+
+```
+my-video/
+├── public/projects/<project>/
+│   ├── <narration>.md                # authoritative narration (given or written)
+│   ├── tts_chunks/{actId}/           # TTS path only — per-chunk mp3 + txt + chunks.json
+│   ├── {actId}.mp3                   # per-act MP3 — STT source (given or TTS-concat)
+│   ├── {actId}.wav                   # delay-free WAV — what compositions PLAY
+│   ├── words/{actId}.words.json      # STT word-level timing (Phase 1)
+│   ├── transcripts/{actId}.{srt,txt} # STT transcripts (Phase 1)
+│   └── subs/{actId}.subs.json        # built subs, inspection copy (Phase 2)
+├── scripts/
+│   ├── tts-<project>.js              # TTS path — chunks narration + calls Edge TTS
+│   │                                 #   (prosody path: split on **bold**, per-segment
+│   │                                 #    pitch/rate, joinBeat, baked [停顿] silence)
+│   ├── concat-<project>-audio.js     # TTS path only — stitches chunks → MP3 + WAV
+│   ├── transcribe-<project>.js       # Phase 1 — uploads WAV to Whisper
+│   ├── fix-<project>-actN-tail.js    # Phase 1 — tail-truncation splice (dynamic OFFSET)
+│   ├── build-<project>-subs.js       # Phase 2 — aligns timing + builds subs
+│   └── check-<project>-subs.js       # Phase 2 validation (monotonic sweep)
+└── src/projects/<project>/
+    ├── theme.ts  Particles.tsx  LowPoly.tsx
+    ├── SceneShell.tsx                 # shell chrome + audio + ambient + subs
+    ├── acts.ts                        # FPS, intro/tail frames, AUDIO_LEN_SEC, actDuration()
+    ├── Open.tsx  Act1.tsx..ActN.tsx   # one composition per act
+    └── scenes/
+        ├── _subtitles.tsx             # <EduSubtitles> renderer
+        └── _subs/
+            ├── _types.ts
+            └── {actId}.subs.ts        # AUTO-GENERATED — never hand-edit
+```
+
+源文件同时也在 `src/Root.tsx`（Phase 4）中注册。MP3 会被保留下来（脚本仍会引用它们）；构图播放的是 WAV。
+
+> **本地 TTS 服务（韵律路径）。** Edge TTS MCP 运行在 `MCPs/tts/index.js`，监听 `localhost:3100`。为了支持 `rate`/`pitch`/`volume`，我们对它做了修改，把这些参数转发给 `edge-tts-universal` 的 `ProsodyOptions`（并在 `tts_synthesize` 的 zod schema 以及 `/api/tts/synthesize` REST 路由中暴露出来）。如果你重新克隆或重置了这个服务，请重新应用这处改动，否则逐段韵律会静默失效（no-op）。
+
+## 先决定音轨的形状（这决定了后面一切）
+
+| 音频布局            | 参考项目                            | 流水线                                                                                                                              |
+| ----------------------- | ------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------- |
+| **单个连续文件** | `6-time-money`                       | 单份 `words.json`，一条音轨 `actId:"full"`，各幕通过 `<Audio startFrom/endAt>` 播放**切片**，字幕上叠加 `frameOffset`/窗口 |
+| **每幕一个文件**    | `5-education-ep2`、`7-education-ep3`、`11-education-ep4`、`13-wittgenstein-ai` | **每幕**一份 `words.json`，每个 `actId` 对应一条字幕轨，每一幕**完整**播放自己的文件（不切片）          |
+
+选择与你拿到的音频相匹配的形状。ep7/ep4 拿到的是分幕文件，所以它们使用分幕模型（ep2 的管线），同时借用 #6 的视觉语言。
+
+即便音频是分幕的，你依然需要**混合参考两个项目**：
+
+- **视觉语言 / 外观** → 抄自 `6-time-money`（主视觉桌面图、地形、粒子、章节标题式开场、1440×1080 @ 60fps 规格）。
+- **字幕管线** → 抄自 `5-education-ep2`（按幕划分的 `SUBS_BY_ACT`，简单的 `actId` prop，没有 `frameOffset`/窗口机制）。
+- **自动强调**（仅当口播稿是纯文本 / 没有 `[强调]` 标签时）→ 从 `build-timemoney-subs.js` 抄 `autoTagEmphases()` + `EMPHASIS_KEYWORDS`。如果口播稿已经带有 `[强调]` 标签，则改用 `build-eduEp2-subs.js` 中标签驱动的路径。
+
+## ⚠️ MP3 播放陷阱（务必读这一节——它每次都会咬你一口）
+
+**Remotion 构图必须播放 WAV，而不是 MP3。** MP3 携带编码器延迟/填充（一个非零的 `start_time`，例如 `0.025057`），并且寻址（seek）粒度很粗。当一幕在 `<Sequence from={120}>` 内部播放音频时（那 2 秒的章节标题开场），Remotion 会在 MP3 里寻址，落点会在真正的起点之前一点，于是**重放了文件的开头**——你会先听到第一句话，它重复一遍，然后才正常继续。
+
+这**不是**代码 bug，也**不是**音频文件损坏——文件本身没问题，问题出在格式上。#6 之所以躲过了这个坑，是因为它从一份 WAV 母版渲染，MP3 仅用于转写。
+
+**修复方法：** 把每个分幕文件转换成一份无延迟的 WAV，让构图指向这份 WAV。保留 MP3——转写/构建脚本仍然会引用它们。
+
+```bash
+for f in act_cold act_1 act_2 act_3 act_4; do
+  ffmpeg -y -i "public/projects/<project>/$f.mp3" \
+    -ar 48000 -ac 2 -c:a pcm_s16le \
+    "public/projects/<project>/$f.wav" -loglevel error
+done
+# verify start_time is gone (prints N/A for WAV):
+ffprobe -v error -show_entries stream=start_time \
+  -of default=noprint_wrappers=1:nokey=1 public/projects/<project>/act_1.wav
+```
+
+然后把每个 `<SceneShell audioPath="…">` 都改成对应的 `.wav`。WAV 文件通过 **Git LFS** 追踪（`.gitattributes: *.wav filter=lfs`），所以一份几百兆的母版文件不会把仓库撑大——提交之前用 `git check-ignore` / `git check-attr filter <file>` 确认一下。
+
+> 诊断捷径：如果有用户反馈"音频先重复播放第一句话，然后才正常播放"，几乎总是这个问题。检查一下 MP3 的 `ffprobe … start_time`；如果非零，就转换成 WAV。转写文本/`words.json` 干净地从头开始（只出现一次）可以确认内容本身没问题，问题纯粹出在播放环节。
+
+## Phase 0（仅 TTS 路径）—— 脚本准备 + TTS 生成
+
+如果你手上已经有真实录制的音频，完全跳过这个阶段。这条路径用于从一份书面口播稿通过 Edge TTS 生成音频。
+
+### Step 0a —— 为语音朗读准备口播稿
+
+在生成 TTS 之前，稿子必须先针对语音的流畅度做编辑。书面文字和有声音频的要求是不同的——在屏幕上读起来通顺的文字，念出声来可能是断裂的。
+
+**常见问题及修复方法：**
+
+1. **断续的短句碎片** —— 由句号隔开的、彼此独立的短句，TTS 会把它们读成一个个完整的停顿，句与句之间留有长长的静音。把它们合并成用逗号、破折号或连词衔接起来的流畅长句。
+
+   ```
+   ❌  你烧掉的十几年。退不回来的年华。
+       你签在纸上的那个名字。一具能被问责、能被开除的肉身。
+
+   ✓   你烧掉的十几年，退不回来的年华；你签在纸上的那个名字，
+       一具能被问责、能被开除的肉身；...
+   ```
+
+2. **用句号断开的列表项** —— 每一项都以 `。` 结尾的列表，会被朗读成一个个独立、带完整停顿的句子。项与项之间用 `；`，只在整个列表结束时用 `。`；短小的条目也可以用 `、` 连接。
+
+3. **过短的段落** —— 一个被空行前后包围、只有一句话的段落，会让 TTS 在前后都插入一段很长的停顿。除非这个停顿是刻意为之的（例如 `[停顿]`），否则应把它并入前后相邻的段落。
+
+4. **Markdown 加粗** —— `**文字**` 标记有两种可能的作用，取决于使用的 TTS 模板：
+   - **无韵律路径（ep4）：** `**` 会在 TTS 阶段被 `stripMarkdown()` 剥离，在构建脚本中也会被剥离用于显示。屏幕上的强调完全来自 `EMPHASIS_KEYWORDS` 的自动标注；`**` 标记本身是不起作用的。
+   - **韵律路径（#13）：** `**加粗**` 段落是作者刻意设计的戏剧性节拍，会被**重新利用**为逐段音频韵律（见 Step 0e-bis）。TTS 脚本会把每个分段按 `**` 拆开，把加粗的那一段以更低的音高 / 更慢的语速单独调用一次 Edge TTS 合成。它们在屏幕显示时仍然会被剥离；字幕强调依然由关键词驱动，与 `**` 无关。
+
+5. **停顿标记** —— `[停顿]` 和 `[长停顿]` 同样有两种作用：
+   - **无韵律路径（ep4）：** 会被 `stripMarkdown()` 剥离，**不会**影响 TTS 的节奏——自然停顿只来自标点符号。
+   - **韵律路径（#13）：** 它们是**流程控制**信号。TTS 脚本会把每一个都转换成一个强制的分段边界，并在前一段 mp3 的末尾附加一段固化的静音（`[停顿]` ≈ 180ms，`[长停顿]` ≈ 450ms）。它们同样会从朗读文本和显示文本中被剥离，但静音是真实存在于音频里的。这是在音频来源是 TTS 而非真人配音时，仍然还原稿子所设计的节奏感的方式。
+
+**经验法则：** 分块之前先把每一段大声读一遍。如果你因为一个句号而自然而然地在句中停顿，那这个句号就该改成逗号。
+
+### Step 0b —— 小节标题归一化
+
+小节标题可能包含花引号（`"认知"`），这会破坏 JS 字符串字面量的匹配。请务必用以下方式对标题查找做归一化处理：
+
+```js
+function normalizeHeading(s) {
+  return s
+    .replace(/\u201c/g, '"').replace(/\u201d/g, '"') // " " → "
+    .replace(/\u2018/g, "'").replace(/\u2019/g, "'") // ' ' → '
+    .trim();
+}
+// Build lookup map with normalized keys
+const SECTION_TO_ACT = {};
+for (const [k, v] of Object.entries(SECTION_TO_ACT_RAW)) {
+  SECTION_TO_ACT[normalizeHeading(k)] = v;
+}
+// Look up with normalization
+const actId = SECTION_TO_ACT[normalizeHeading(section.title)];
+```
+
+这一点至关重要——标题不匹配会让那一幕悄无声息地产出零个分段，且不会报任何错误。
+
+### Step 0c —— 发音替换（多音字处理）
+
+中文有大量多音字——同一个字有两种或以上有效读音。TTS 模型默认会选取统计上最常见的读音，而这对专业词汇来说往往是错的。
+
+**修复方法：** 在把文本发给 TTS 之前，把有问题的字替换成一个只有一种读音的同音字。这种替换**仅用于 TTS**——显示出来的字幕文本使用原本正确的字（分别存放在 `displayText` 和 `ttsText` 中）。
+
+**模式：**
+
+```js
+const PRONUNCIATION_SUBS = [
+  // [text-to-replace, replacement-for-TTS-only]
+  // Order: longer/more-specific patterns first
+  ["重装税",   "崇装税"],   // 重 here = chóng (reinstall), not zhòng (heavy)
+  ["重装成本", "崇装成本"],
+  ["每代重装", "每代崇装"],
+  ["重装",     "崇装"],     // catch-all last
+];
+```
+
+**替换逻辑：**
+- 找一个读音正确且没有歧义的同音字。
+- 用来替换的字应当足够生僻，不会在口播稿中自然出现（避免误伤）。
+- TTS 生成音频之后，`chunks.json` 清单会为每个分段同时存储 `ttsText`（发给 TTS 的文本）和 `displayText`（屏幕上显示的文本）。
+
+**常见需要留意的多音字：**
+
+| 字符 | 错误的默认读音 | 该语境下的正确读音 | 修复方法 |
+|-----------|--------------|-------------------|-----|
+| 重 | zhòng（重量的重） | chóng（重新、再次） | 崇 |
+| 长 | cháng（长短的长） | zhǎng（生长/首长） | 视上下文而定 |
+| 行 | xíng（行走/可以） | háng（行列/行业） | 杭 或 航 |
+| 的 | de（助词） | dí（目标） | 通常上下文就够用 |
+| 中 | zhōng（中间） | zhòng（击中/受影响） | 视情况而定 |
+| 处 | chǔ（处理） | chù（地方） | 视情况而定 |
+
+复查 TTS 输出时：如果某个词听起来不对，几乎总是多音字的问题。确定正确的拼音，找一个同音替代字，把它加进 `PRONUNCIATION_SUBS`，然后用 `--act X --chunk N` 只重新生成那一段。
+
+### Step 0d —— TTS 分段策略
+
+TTS 脚本会把每一幕的口播稿切分成约 280 字的分段。关键规则：
+
+**分段大小：** 软目标约 280 字，硬上限 350 字。这样可以兼顾：
+- 避免超长输入导致 TTS 超时或质量下降
+- 避免过短输入导致静音过多、节奏不自然
+- 让编辑之后可以对单个分段做精确重新生成
+
+**断点优先级顺序：**
+1. 硬性句末标点：`。！？!?`（把标点包含在该分段内）
+2. 破折号对：`——`
+3. 软性标点：`，、：；,;:`
+4. 兜底方案：在软上限处硬切
+
+**合并过短的尾部分段：** 不足 20 字的分段会被并入前一个分段，避免 TTS 为一个句子碎片生成一个极短的文件。
+
+**每个分段的输出：**
+```
+tts_chunks/{actId}/
+  chunk-000.mp3    ← TTS audio
+  chunk-000.txt    ← ttsText sent to TTS (with substitutions applied)
+  chunks.json      ← manifest: [{idx, ttsText, displayText, file}]
+```
+
+正是这份清单让精确重新生成成为可能。要在稿子编辑之后重新生成单个分段：
+```bash
+node scripts/tts-<project>.js --act act3 --chunk 7 --force
+node scripts/concat-<project>-audio.js act3
+node scripts/transcribe-<project>.js act3
+node scripts/build-<project>-subs.js
+```
+
+### Step 0e —— TTS MCP
+
+TTS MCP 位于 `http://localhost:3100/mcp`。工具名：`tts_synthesize`。
+
+```js
+// SSE-based HTTP call (not standard fetch — needs Accept header)
+const body = JSON.stringify({
+  jsonrpc: "2.0", id: Date.now(), method: "tools/call",
+  params: {
+    name: "tts_synthesize",
+    arguments: { text, voice: "zh-CN-YunyangNeural", output_path: chunkPath }
+  }
+});
+// Headers required:
+//   Content-Type: application/json
+//   Accept: application/json, text/event-stream
+// Parse SSE response: lines starting with "data: " contain the JSON result
+```
+
+音色：`zh-CN-YunyangNeural`——男声，权威感强，适合教育类口播。两次调用之间加 100ms 延迟，避免对服务造成压力。
+
+**⚠️ 内联的 `<prosody>` SSML 不起作用——它会被逐字念出来。** Edge TTS MCP 会把你的文本转义包裹进它自己的 SSML 中，所以像 `<prosody pitch="+15Hz" rate="-15%">重要</prosody>` 这样的标签，从语音里念出来会变成"prosody pitch 等于 加 15Hz rate 等于…"这样的字面文字。已在 #13 上验证过。**不要**试图把逐字的 SSML 注入 `text` 参数。
+
+**真正有效的方式（整句级别的韵律参数）。** 本地 MCP 服务器（`MCPs/tts/index.js`）已经被扩展，会把 `rate` / `pitch` / `volume` 转发给 `edge-tts-universal` 的 `ProsodyOptions`（这个库本身是支持这些参数的，只是原来的服务器没有把它们传过去）。现在 `tts_synthesize` 工具接受：
+
+```js
+arguments: {
+  text, voice: "zh-CN-YunyangNeural", output_path,
+  rate: "-15%",   // explicit Edge rate string (takes precedence over `speed`)
+  pitch: "-6Hz",  // whole-utterance pitch shift
+  volume: "+0%",  // whole-utterance volume
+}
+```
+
+这些参数应用于**整句**。要在一个句子**内部**改变韵律，你必须把句子拆成多次独立的 TTS 调用再拼接起来（见 Step 0e-bis）。如果你重启 TTS 服务器以让服务端的改动生效，请把它作为一个持久化的后台进程启动（临时 shell 会话结束后它会被杀掉），并在生成之前确认 `GET /health` 返回 `{"status":"ok"}`。
+
+### Step 0e-bis —— 分段级韵律 + 戏剧性节拍（#13 韵律路径）
+
+当口播稿带有 `**加粗**` 戏剧性节拍、并且你希望它们**在听觉上被感知到**（而不只是屏幕上的颜色变化）时，使用 #13 的模型：把每个分段合成为一串一串的**片段（segments）**再拼接起来，而不是一次性调用一整段 TTS。
+
+1. **按 `**` 拆分每个分段**，得到交替出现的普通/强调片段。
+2. **分别合成每个片段**——强调片段使用 `EMPHASIS_PROSODY`（#13 用的是 `{ rate: "-10%", pitch: "-6Hz" }`，营造一种更有分量、更前倾的表达方式）；普通片段使用默认韵律。
+3. **对内部拼接点做修剪 + 补节拍，然后再拼接**（拼接逻辑见下）。
+4. 如果分段以停顿标记结尾，则**在最后一个片段末尾附加 `[停顿]` 静音**。
+
+**⚠️ "No audio was received"（未收到音频）陷阱。** 按 `**` 拆分时，可能会留下一个**只包含标点符号**的片段（例如 `**生活形式**` 后面孤零零的一个 `。`）。Edge TTS 对无法朗读的片段会返回 "No audio was received"，导致整个分段失败。**修复方法：** 在 `parseSegments()` 中，把任何不含 `[\u3400-\u9fff0-9A-Za-z]` 字符的片段并入相邻片段（它会沿用相邻片段的韵律；末尾的标点本来也听不见）。同时给每次 TTS 调用包一层小型重试（`ttsSynthesizeRetry`，2 次），应对偶发的瞬时故障。
+
+**⚠️ 戏剧性的铺垫→揭示节拍（#13 的"揭示被赶了"bug）。** Edge TTS 会给每个片段前后各垫上约 0.2–0.3 秒的引导静音和约 0.5–0.7 秒的尾部静音。如果你天真地把每个内部拼接点统一修剪平（约 70ms），你恰好会**删掉揭示之前那个戏剧性的停顿**——`标题就四个字——言尽意论` / `没有争议：言…` 会听起来很仓促、不自然（这正是 #13 上用户反馈的那次回归）。**修复方法：** 把每个内部拼接点都修剪得很紧，消除 Edge 那种不稳定的垫音，然后**追加一段刻意设计、按上下文决定的节拍**，保证停顿一定存在：
+
+```js
+// joinBeat(prevText, nextSeg) → seconds of silence appended at the join.
+// Take the MAX of the applicable signals so a reveal always gets its lean-in.
+const JOIN_BEAT_REVEAL = 0.32; // next segment is an emphasized reveal
+const JOIN_BEAT_SETUP  = 0.26; // prev segment ends with —— or ：/: (setup→reveal)
+const JOIN_BEAT_HARD   = 0.20; // prev ends 。！？ mid-chunk
+const JOIN_BEAT_SOFT   = 0.05; // prev ends ，、；  (keep tight, mid-clause split)
+// trim: INNER_TRIM_LEAD 0.03 on every non-first segment; tail trimmed tight
+// (0.04) on every non-last segment; chunk OUTER edges left untouched so the
+// chunk-to-chunk breath stays natural.
+```
+
+这四个位于 TTS 脚本顶部的 `JOIN_BEAT_*` 常量，是唯一的节奏调节旋钮——调整它们、重新生成，就搞定了。一个真正带有节拍的片段拼接点，在 `ffmpeg silencedetect` 上测得约 0.39 秒的静音（相比被压扁后的约 0.07 秒）。
+
+**⚠️ 单个字母会被读成字母音。** 散落在正文中的一个孤立拉丁字母缩写（例如"早期W"，意指早期维特根斯坦）会被念成英文字母"W"——非常突兀。请在口播稿中写出完整的名字。（在被剥离的 `> 结构` 引用块中的字母缩写没问题——它们永远不会进入音频。）修复之后，只重新生成那一个分段：`node scripts/tts-<project>.js --act actN --chunk K --force`。
+
+### Step 0f —— 拼接分段 → 生成每幕 WAV
+
+用 ffmpeg 的 concat demuxer 按顺序把所有分段拼接起来：
+
+```js
+// Write concat list
+const listContent = chunkFiles.map(f => `file '${f}'`).join('\n');
+fs.writeFileSync(listPath, listContent);
+
+// Step 1: concat MP3s (kept for STT)
+execSync(`ffmpeg -y -f concat -safe 0 -i "${listPath}" -c copy "${mp3Out}"`);
+
+// Step 2: MP3 → delay-free WAV (the format Remotion plays)
+execSync(`ffmpeg -y -i "${mp3Out}" -ar 48000 -ac 2 -c:a pcm_s16le "${wavOut}"`);
+
+// Verify: start_time must be N/A
+execSync(`ffprobe -v error -show_entries stream=start_time ... "${wavOut}"`);
+```
+
+在继续之前，务必确认输出 WAV 的 `start_time=N/A`。
+
+### Step 0g —— 母带化处理每幕 WAV（响度归一化）
+
+原始 TTS 输出的音量偏小，且各幕之间不一致（#13 测得约 -26.8 LUFS 综合响度，但真实峰值仅约 -5.6 dBTP——因为 `[停顿]` 静音和戏剧性节拍拉低了平均值，形成了高达约 21 dB 的巨大峰值余量）。需要把每一幕都统一处理到一个一致的播出级响度，让播放效果均衡、可直接上平台。
+
+使用透明化处理的脚本（高通 80Hz + 瞬态限幅器 + **两遍线性 loudnorm**，不做压缩/降噪）：
+
+```bash
+SH=/Users/jingyu/.cursor/skills/audio-processing/master_to_wav.sh
+cd public/projects/<project>
+for a in open act1 act2 act3 act4 act5 act6 act7 outro; do
+  o=$(ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "$a.wav")
+  TARGET_I=-14 TARGET_TP=-1 TARGET_LRA=7 "$SH" "$a.wav" "/tmp/master/$a.wav"
+  m=$(ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "/tmp/master/$a.wav")
+  # CRITICAL: duration MUST be unchanged (subtitle timing + AUDIO_LEN_SEC depend on it)
+  node -e "process.exit(Math.abs($o-$m) > 0.01 ? 1 : 0)" || echo "  ⚠ $a DURATION DRIFT — do NOT swap"
+done
+# only after every act passes the duration check, swap the mastered files in:
+for a in open act1 act2 act3 act4 act5 act6 act7 outro; do cp "/tmp/master/$a.wav" "$a.wav"; done
+```
+
+**目标值，以及"在不失真的前提下尽量响"的现实情况。**
+- loudnorm + highpass + alimiter 都是**保持时长不变**的，所以在拼接**之后**做母带处理（以及在任何音频编辑之后重新做母带处理）是安全的——但在替换文件之前**一定要**验证每一幕的 `durΔ < 0.01s`，否则字幕同步会出问题。
+- 对于这类动态较大的口播内容，**-14 LUFS @ -1 dBTP** 是透明化处理下的最佳平衡点（也是事实上的 YouTube/Bilibili 播出目标值）。
+- 对这份素材要求 **-13 LUFS**，在透明模式下最终会落在约 -14 LUFS——这是正常结果，不是失败。要在 -1 dBTP 上限下真正做到 -13，loudnorm 就必须对语音峰值做约 9 dB 的限制，而这正是透明化处理要避免的压缩。"在不失真的前提下尽量接近目标" 在这里的意思就是约 -14。要真正做得更响，你需要把 `TARGET_TP` 提到 `-0.5`，或者换用一个有压缩效果（非透明）的处理方案——两者都要牺牲动态范围；只有在明确要求时才这么做。
+- `TARGET_LRA=7`（相较脚本默认值 5）能保留戏剧性节拍的动态起伏；只有在某一幕感觉太不均匀时，才收紧到接近 5。
+
+**母带处理后的复核（在替换文件后重新确认 WAV 契约）：**
+- `start_time=N/A`（loudnorm 导出的文件依然干净——#13 已确认）。
+- 格式为 `48000 / 2ch / 24-bit` PCM——注意母带脚本导出的是 **24-bit**（拼接那一步写的是 16-bit）；两者在 Remotion 中都能正常播放，也都保持 Git LFS 追踪。
+- 用 `ffmpeg -i <a>.wav -af loudnorm=I=-14:print_format=json -f null -` 抽查综合 LUFS 值。
+- 母带处理不会改变时长，所以 `AUDIO_LEN_SEC` 和字幕**不需要**重新构建——但如果这次母带处理是作为一次音频内容编辑（重新拼接）的一部分进行的，那么照常还是要走一遍重新转写/重新构建的流程。
+
+## Phase 1 —— 语音转文字（仅用于时间戳）
+
+口播稿 markdown 对**显示文本**是权威的；STT（语音转文字）只提供**时间信息**。听错的内容永远不会出现在屏幕上（这是 Phase 2 从结构上就保证了的）。
+
+把 `scripts/transcribe-eduEp2.js` 改造成 `scripts/transcribe-<project>.js`：
+
+- 把 `PROJECT_DIR` 指向新项目，把 `TARGETS` 指向各幕的 WAV 文件。
+- 请求参数使用 `language:chinese, word_timestamps:true`。
+- `alignedAgainst` 设为口播稿的文件名。
+
+每一幕都要产出（与 ep2 的 schema 一致）：
+
+- `public/projects/<project>/words/{actId}.words.json` ——
+  `{ source, durationSec, wordCount, alignedAgainst, words:[{word,start,end}] }`
+- `public/projects/<project>/transcripts/{actId}.{srt,txt}`
+
+**TTS 生成的音频比真人配音转写起来干净得多。** Whisper 的听错会更少，因为声音是一致的、发音是标准的，也没有语气词和不流畅的地方。对于 TTS 来源的项目，CONTEXTUAL_FOLDS 表会短很多——主要是数字渲染问题，以及少量发音替换的还原（例如把 `崇装` 折叠回 `重装`，因为 TTS 阶段的替换不应该影响字幕对齐游标）。
+
+说明：
+
+- 这个脚本和 Speech-to-Text MCP 调用的是同一个 Whisper 服务（`whisper-app-production-dc4b.up.railway.app`）；用哪一个都算满足"使用 STT"的要求。对于批量文件，脚本通常是更可靠的方式。如果你用 MCP，仍然要写出同样的 `words.json`/srt/txt，这样构建脚本才能消费它们。
+- 小于 100MB 的文件可以直接上传。非常长的一幕偶尔会遇到瞬时的 SSL 错误——单独重跑那一幕即可。
+- 从 WAV 获取**真实**时长：`ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 file.wav`（VBR 编码的 MP3 文件头会误报时长；WAV 是准确的）。
+- 对于 TTS 来源的音频：`words.json` 里的 `durationSec` 应该约等于 ffprobe 测得的 WAV 时长。如果两者相差超过 1 秒，检查一下分段拼接的顺序。
+
+### ⚠️ Whisper 尾部截断陷阱（会悄无声息地丢掉最后一句话）
+
+用户报告的症状：*"这一幕在最后一句话说完之前就突然结束了"* / *"最后一条字幕被截断了"*。在较长的幕（>~5 分钟）中，Whisper 有时会**提前几秒钟就停止转写**，返回的 `words.json` 中最后一个词的结束时间远早于 WAV 的实际结束时间。这**不是**偶发性错误——**重新跑一遍整幕的转写，同样的截断会再次出现。**它曾经在 ep4 的 act5 上出现过：单词结束于 338.1 秒，而 WAV 实际有 342.9 秒——整个结尾句子都从 `words.json` 中消失了。
+
+由此产生两个下游故障，都是无声的：
+1. `acts.ts` 里的构图时长（`AUDIO_LEN_SEC`）继承了被截断的 `durationSec`，导致构图在音频播完之前就结束了——最后一句话会播放到构图结束之后，被硬生生切掉。
+2. 最后那句话对应的字幕分段没有任何单词可以锚定，于是它们会退化成截断点附近一个虚假的时间戳。
+
+**检测方法（每次转写之后都要跑一遍）：** 把 `words.json` 的 `durationSec` 和真实的 WAV 时长做对比。任何一幕的差距超过 1.5 秒，就说明发生了截断。
+
+```bash
+for a in open act1 act2 act3 act4 act5 act6 act7; do
+  wav=$(ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "public/projects/<project>/$a.wav")
+  dur=$(node -e "console.log(JSON.parse(require('fs').readFileSync('public/projects/<project>/words/$a.words.json')).durationSec)")
+  echo "$a  words=$dur  wav=$wav"
+done
+```
+
+**修复方法（对于 TTS 拼接的音频尤其可靠——因为分段边界是精确已知的）：** 单独转写**最后一个 TTS 分段**（短片段不会发生截断），把它的单词时间戳偏移到该分段在 WAV 中的位置，然后拼接到被截断的尾部之上。**动态计算这个偏移量**——每次重新生成，时长都可能发生变化，一个写死的数字会悄无声息地让拼接上去的尾部时间错位（#13 上就因为一次节拍编辑的重新生成改变了 act3 的长度而踩了这个坑）：
+
+```js
+const { execSync } = require("child_process");
+const ffdur = (p) => parseFloat(execSync(
+  `ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "${p}"`,
+  { encoding: "utf8" }).trim());
+// final chunk's WAV start = full act WAV duration − final chunk duration
+const OFFSET = +(ffdur(`${proj}/act3.wav`) - ffdur(`${proj}/tts_chunks/act3/chunk-034.mp3`)).toFixed(3);
+const head = main.filter(w => w.start < OFFSET);          // keep chunks 0..N-1
+const tail = chunkWords.map(w => ({                        // standalone re-transcribe
+  word: w.word, start: +(w.start + OFFSET).toFixed(3), end: +(w.end + OFFSET).toFixed(3),
+}));
+data.words = head.concat(tail);
+data.wordCount = data.words.length;
+data.durationSec = tail[tail.length - 1].end;              // now matches the WAV
+```
+
+然后**把 `acts.ts` 里的 `AUDIO_LEN_SEC[actId]` 更新为新的 `durationSec`**，再重新构建字幕。（对于人声录制的音频，没有一个独立的分段可以单独重新转写——取而代之的做法是用 ffmpeg 的 `-ss` 截取尾部片段、转写这个片段，然后用同样的方式拼接。）注意：这种截断是由格式/长度决定的，不是随机的——它会在同一幕每次重新生成之后**再次出现**，所以每次都要重新检查、重新拼接。
+
+## Phase 2 —— 构建字幕 + 修正转写错误
+
+创建 `scripts/build-<project>-subs.js`，把以下两部分组合起来：
+
+- `build-eduEp2-subs.js` 中**按幕、多小节**遍历的循环（遍历每一个 `## ` 小节，与该幕的 `words.json` 对齐，游标每一幕重置一次；`### ` 子标题只是脚手架——跳过标题行本身，保留正文），以及
+- 如果口播稿是纯文本，则加入 `build-timemoney-subs.js` 的**自动强调**路径（移植 `autoTagEmphases()` 以及一份新的 `EMPHASIS_KEYWORDS` 表）。
+
+同时从参考项目中复制 `scenes/_subs/_types.ts`。
+
+**把口播稿的 `## ` 标题映射到各个 actId。** 构建脚本需要一个显式的 `SECTION_TO_ACT` 对象，键是**精确的**标题文本（不含 `## `）。用 `grep -n "^## " <narration>.md` 拿到所有标题，然后把每一个映射到对应音频文件的 actId。始终使用 normalizeHeading() 模式（见 Phase 0b）——标题里的花引号会悄无声息地破坏查找。ep4 的映射表：
+
+```js
+const SECTION_TO_ACT_RAW = {
+  "Cold Open（冷开场——拆包裹隐喻 + 去拟人化论点 + 问题重定向）": "open",
+  "Setup — 那些我们说过的，和没说的（连接前3集 + 尊重旧模型）": "act1",
+  "Movement 1 — 认知值钱，因为它是不可复制的": "act2",
+  'Movement 2 — 那份安排，从来没有在给"认知"定价': "act3",
+  // ...
+};
+const SECTION_TO_ACT = {};
+for (const [k, v] of Object.entries(SECTION_TO_ACT_RAW)) {
+  SECTION_TO_ACT[normalizeHeading(k)] = v;
+}
+```
+
+这里的一个拼写错误或引号不匹配，会让整整一幕悄无声息地产出零个分段——构建完成后一定要核对每一幕的分段数量。
+
+**在 `processBlock` 中剥离 markdown 格式。** 口播稿中可能包含用于视觉强调的 `**加粗**` 标记。这些必须在构建显示文本之前被剥离——否则屏幕字幕上会原样出现星号。在 `processBlock()` 的开头加上这一段：
+
+```js
+function processBlock(blockText) {
+  // Strip markdown bold (**text** → text) before processing
+  const cleanedBlock = blockText.replace(/\*\*([^*]+)\*\*/g, "$1");
+  // ... rest of function uses cleanedBlock instead of blockText
+}
+```
+
+`**` 的剥离只影响显示出来的字幕文本。屏幕上的强调效果是由 `EMPHASIS_KEYWORDS` 自动标注驱动的——口播稿中的 `**` 标记与字幕强调系统无关。
+
+**仅用于显示层面的标点剥离（破折号）。** 要在不影响音频、单词时间戳或对齐的前提下清理屏幕文本，需要在对齐**之后**、计算强调**之前**剥离字符——就在每个分段最终 `text` 被赋值的那个位置：
+
+```js
+for (const c of result.chunks) {
+  // Display-only: drop em dashes. They are non-canonical, so the alignment
+  // cursor already ignores them — this changes NOTHING in audio/timing.
+  // Strip BEFORE autoTagEmphases so emphasis offsets match the shown text.
+  c.text = c.text.replace(/—/g, "");
+  c.emphases = autoTagEmphases(c.text);
+}
+```
+
+这是做任何仅影响显示层面的清理工作（例如 #13 中的破折号）的安全位置：它作用于对齐之后的文本，所以单调性扫描依然干净，而且只需要重新跑一遍构建步骤（不需要重新拼接/重新转写）。顺序很重要——先剥离，**然后**再计算强调，否则带颜色的强调片段的偏移量会跑偏。
+
+**帧几何参数必须匹配项目本身的画幅**，而不是参考脚本的画幅。ep4/ep7 和 #6 一样是 1440 宽（4:3），所以要用 #6 那套按宽度驱动的阶梯值（`60/56/52/48/44/40`，默认 60，字幕槽位约为 1440 的 0.84）——**不是** ep2 的 1920 设置。要匹配渲染器实际使用的 `widthPct`。
+
+产出：
+
+- `public/projects/<project>/subs/{actId}.subs.json`（用于检查）
+- `src/projects/<project>/scenes/_subs/{actId}.subs.ts`（Remotion 运行时使用）
+
+### 强调（只做词组级别，绝不整行强调）
+
+根据这一集实际的论证核心词汇（阅读口播稿）构建一份 `EMPHASIS_KEYWORDS` 表。语义角色分类：
+
+- `insight`（青绿色）—— 模型/解答类词汇。
+- `tension`（琥珀色）—— 被诊断出的问题。
+- `system`（钢蓝色）—— 被引用的思想家、分类标签、基准量。
+
+优先匹配最短、最具体的词（不重叠），例如 `延伸者` 要排在 `延伸` 之前。持续出现的核心词汇保持一致的着色是刻意为之的设计——这是频道内容在整个播放过程中逐渐结晶成型的方式。没有论证承重的单纯陈述性内容不做强调。
+
+### 混淆折叠表 = 转写错误修正
+
+Whisper 会听错词，还会把中文数字念成阿拉伯数字。由于对齐过程会剥离非中日韩字符，一个未被折叠的 `"2025"` 会直接坍缩成空，导致游标丢失位置。`CONTEXTUAL_FOLDS` 把**错误的（STT）形式 → 口播稿中的确切字符**映射起来，让对齐能落在正确的位置。较长的模式要排在前面。以下几类始终需要留意：
+
+- **中文数字（关键）：** 扫描口播稿中**每一个**被念出来的数字并把它折叠——年份（`2025→二零二五`）、百分比/年龄（`16→十六`、`21→二十一`）、小数（`2.1→二点一`、`1.0→一点零`、`13.3→十三点三`）、大数字（`150→一百五十`、`580→五百八十`）。
+- **繁体变体的出现：** Whisper 有时会在转写中间突然冒出繁体字。一份单字的 `SAFE_FOLDS` 映射表（學→学、這→这、個→个、讀→读、紅樓夢→红楼梦，……）能清掉大多数"找不到匹配块"的警告。这是 ep7 上修复效果最大的单一改动。
+- **反复出现的核心词的同音字：** 核心术语会反复出现几百次，所以一个错误的折叠映射会波及很多分段。ep7 的例子：`主块/主快→组块`（在 act1 中出现约 50 次）。还有 `不可逆性睡→不可逆性税`、`竖感→数感`，以及特定短语中无生命的 `他→它`。
+- **专有名词：** 提前埋好锚点（例如 柏拉图、苏格拉底、卡尼曼、塞勒、布林约尔松、古德哈特、斯坦福）。
+
+当未来一次口播稿编辑引入了新的听错时，添加一条 `["错误的","正确的"]` 映射并重新构建。**永远不要手动编辑 `{actId}.subs.ts`**——去编辑口播稿或构建表格，然后重新生成。
+
+#### ⚠️ 同音字游标跳跃陷阱（头号字幕 bug——务必读这一节）
+
+这是最常见的对齐失败情形，而且它是**无声的**——不会触发任何构建警告。用户报告的症状：*"从某句话开始字幕就不显示了"*，或者*"一整段都不见了/被黑屏了"*，或者*"字幕会跳到前面，然后再跳回来"*。
+
+**发生机制。** 即使是在干净的 TTS 音频上，Whisper 也会把某个字转写成它的**同音字**（它/他、集/级、合上/和尚——都是读音相同的合法写法）。这样一来，口播稿分段的字面前缀就无法在它真正所在的位置匹配上，于是对齐器的兜底方案（一个 3–4 字的短前缀锚点）会转而匹配到**之后某个看起来一模一样的短语**。游标因此向前跳跃——往往是几十秒——把一整段分段一起拖走，与后面的分段发生碰撞，产生退化（零长度）和乱序的条目。被挪走的这一段时间范围内什么都不会渲染出来。
+
+这个问题在 ep4 中出现在**四个**地方（分别在 act 3/4/5/6），形态都一样：
+
+| 幕 | STT 听到的 | 口播稿原文 | 位移情况 |
+|-----|-----------|-----------|--------------|
+| act4 | `第二级` | `第二集` | "第一样"那一段（约 40 秒）被黑屏 |
+| act5 | `他是一个招募` | `它是一个招募` | "招募"那一段被向后拖了约 37 秒 |
+| act3 | `但他没有生命` | `但它没有生命` | "但它没有生命/所以…"被位移 |
+| act6 | `和尚`、`之前他吞掉` | `合上`、`之前它吞掉` | "空位期"那一段向后跳了约 14 秒 |
+
+**修复方案**（每条折叠映射都要按下面的方法验证安全性）：
+1. 检查缺口周围的音频单词：`node -e 'JSON.parse(...words.json).words` … 把可疑时间窗口内的单词打印成一整串字符串。听错的地方通常一眼就能看出来。
+2. 确认这个 STT 形式**绝不是合法的口播稿原文**（在所有的 `words.json` 以及口播稿 `.md` 中都统计一遍）。只有当错误形式**只**作为听错出现时，这条折叠映射才是安全的。
+3. 添加一条 `CONTEXTUAL_FOLD`，把**STT 形式 → 口播稿的原始字符**对应起来。优先选用**最长、最具体的短语**（比如 `他是一个招募`，而不是裸的 `他→它`），这样折叠映射就不会在别处误伤。折叠映射是按从左到右的顺序作用在原始 STT 字符串上的，所以像 `之前他吞掉` 这样的短语折叠，即便同一个文本块里也触发了一个更宽泛的折叠（`和尚→合上`），依然能正常生效。
+4. 重新构建并重新跑一遍单调性扫描（见"验证"一节），直到结果是 `nonmono:0`。
+
+**"它→他"（无生命指代）是每一集都反复出现的元凶**——TTS 口播稿会把抽象概念拟人化（"它" = 压力/系统/安排），而 Whisper 会写成有生命的同音字。提前用新口播稿中具体的"它"字短语去填充折叠映射表。
+
+### 验证
+
+创建/运行 `scripts/check-<project>-subs.js`（改造自 `check-timemoney-subs.js`）。
+
+- **真正的 bug → 用折叠映射修复：** 多秒级的重叠、乱序的分段。
+- **无害情况 → 保留不动：** 与真实口播停顿重合的 1–2 秒显示间隙（渲染器在静音期间会清空画面），以及 8帧淡入/12帧淡出窗口内的次秒级重叠。
+
+**每次构建之后都要跑一遍单调性扫描**——它能捕捉到上面那个同音字游标跳跃陷阱（这个陷阱不会触发任何构建警告）。三种信号，出现任意一种都意味着游标发生了跳跃：
+
+- **`startFrame` 非单调** —— 某个分段的起始时间比它前一个分段还早
+- **退化分段** —— `endFrame <= startFrame`（零长度，不可见）
+- **可疑地过长的单个分段** —— 一行字幕跨度超过 6.5 秒，通常意味着它锚定错误、被插值拉长了
+
+```js
+// scripts/check-<project>-subs.js — run across ALL acts, fail loud on anomalies
+const dir = "public/projects/<project>/subs";
+for (const f of fs.readdirSync(dir).filter(f => f.endsWith(".subs.json"))) {
+  const c = JSON.parse(fs.readFileSync(dir + "/" + f, "utf8")).chunks;
+  let bad = 0, prev = -1, badIdx = [];
+  c.forEach((x, i) => { if (x.startFrame < prev) { bad++; badIdx.push(x.chunkId); } prev = x.startFrame; });
+  const deg = c.filter(x => x.endFrame <= x.startFrame).length;
+  const long = c.filter(x => (x.endSec - x.startSec) > 6.5).map(x => x.chunkId);
+  console.log(f, "nonmono:" + bad, "degen:" + deg, "long:" + (long.join(",") || "-"),
+    badIdx.length ? "  jumps@" + badIdx.join(",") : "");
+}
+```
+
+一集干净的作品应该在每一幕上都读出 `nonmono:0 degen:0 long:-`。任何非零的值都指向需要添加折叠映射的确切分段。
+
+### 重新生成命令
+
+```bash
+# TTS path — full pipeline
+node scripts/tts-<project>.js                    # generate all chunks (skips existing)
+node scripts/tts-<project>.js --act act3 --chunk 7 --force  # regenerate one chunk
+node scripts/concat-<project>-audio.js           # stitch chunks → MP3 + WAV (all acts)
+node scripts/concat-<project>-audio.js act3      # one act only
+node scripts/transcribe-<project>.js             # upload WAVs to Whisper (all acts)
+node scripts/transcribe-<project>.js act3        # one act only
+
+# Both paths — subtitle rebuild (run after ANY narration or fold-table edit)
+node scripts/build-<project>-subs.js             # all acts
+node scripts/check-<project>-subs.js             # validation
+```
+
+## Phase 3 —— 分幕构图（背景 + 地形 + 粒子 + 字幕）
+
+通过复制 #6 的写法来创建 `src/projects/<project>/`：
+
+- `theme.ts` —— 从 `../the-filter/theme` 重新导出 `COLORS, FONT`；导出 `FPS=60`、`LOGICAL_WIDTH`、`LOGICAL_HEIGHT`。
+- `Particles.tsx` —— 从 `../the-filter/Particles` 重新导出。
+- `LowPoly.tsx` —— 复制 #6 的实现（`GlowFilters`、`terrainPoints`）。
+- `SceneShell.tsx` —— 以**ep2 的** SceneShell 为范本建模（按幕划分：`actId` + `audioPath` props，通过 `<Audio src={staticFile(audioPath)} />` 播放整个文件，**不做切片/frameOffset/窗口处理**），同时保留 #6 的界面元素：主视觉桌面图（`projects/the-migration/assets/cold-open/typography-v3/00-archive-table-top.png`）、`HeroBackdrop` + `HeroVignette`、`ChapterTitle`（88px 琥珀色大标题，等宽字体小标签字间距 0.18em，等宽字体副标题）、由 `ambient` prop 控制开关的 `AmbientLayer`（地形 + 粒子）。字幕通过 `<EduSubtitles actId={actId} />` 在 intro 之后的 `<Sequence from={chapterIntroFrames}>` 内部渲染。
+- `scenes/_subtitles.tsx` —— 以**ep2 的**渲染器为范本建模（按幕划分的 `SUBS_BY_ACT = { open, act1, … }`，简单的 `actId` prop），保留该项目锁定的画幅规格（#6：y=950，widthPct 0.84，思源宋体 SC 500/700，字间距 0.04em，8帧淡入/12帧淡出，处理 NC）。在分幕模型中，每一幕分段的 `startFrame`/`endFrame` 都是**幕内局部**的（分段帧 0 = 该幕音频的起点）。它们能自动保持同步，是因为 `<Audio>` 和 `<EduSubtitles>` 都被挂载在**同一个** `<Sequence from={chapterIntroFrames}>` 之内，共享同一个幕内局部帧原点——不需要 `frameOffset`。
+- `acts.ts` —— 按幕划分：`FPS=60`、`CHAPTER_INTRO_FRAMES=120`、`TAIL_FRAMES=60`。时长来自每一幕 `words.json` 最后一个单词的结束时间（`durationSec`）。**`words.json` 存放在 `public/` 目录下，不在 src 的 tsconfig include 范围内，因此无法被 import**——把每一幕的 `durationSec` 复制进一份写死的 `AUDIO_LEN_SEC` 映射表，并计算 `actDuration(actId,{intro})` = `intro + ceil(AUDIO_LEN_SEC[actId]*FPS) + TAIL_FRAMES`（open 传入 `intro:0`）。如果音频被重新转写，要重新同步这份映射表。
+- `Open.tsx`、`Act1.tsx`…`ActN.tsx` —— 每一个都渲染一个 `<SceneShell>`，传入该幕的 `actId`、`audioPath`（**.wav**——参见 MP3 陷阱那一节）、`chapter` 标题，并导出一个 `*_DURATION` 常量。
+
+### 开场标题/音频延迟约定（与 #6 + ep2 一致）
+
+- **冷开场：** `chapterIntroFrames={0}`——音频在第 0 帧就开始播放，标题跟随实时音频，主视觉图片全程保持显示。
+- **第 1..N 幕：** `chapterIntroFrames={120}` + `ambient`——章节标题会有一段独立的**2 秒**开场（60fps 下的 120 帧）；主视觉图片在最后 30 帧做交叉淡出；音频 + 字幕 + 环境层从第 120 帧开始同步启动。这个 120 帧的 `<Sequence from>` 就是"标题转场所需的 2 秒音频延迟"——它适用于除冷开场之外的每一幕。
+
+对于初始搭建，各幕**不需要**任何定制的分镜内容——外壳 + 地形 + 粒子 + 字幕就是正确的基础配置。把 `children` 留空，后续再补充具体分镜内容。
+
+## Phase 4 —— 注册 + 验证
+
+- 按照现有的 `TimeMoney-*` / `EduEp2-*` 模块（`width=1440 height=1080 fps=60`，时长来自导出的常量）把每一个构图都注册到 `src/Root.tsx` 中。在相邻项目的旁边添加导入。
+- 验证：
+  - 在 `my-video/` 下运行 `npx tsc --noEmit` → 修复所有错误；对新文件运行 `getDiagnostics`。
+  - `npx remotion compositions` → 确认所有新的 id 都能注册并成功构建。
+  - `npx remotion still <Id> --frame=600` → 确认地形 + 粒子 + 字幕在运行时能正确渲染。清理生成的临时 PNG。
+- 把音频改指向 WAV 之后，重新加载 Remotion studio（对预览做硬刷新以清除缓存的音频）。
+
+## 注意事项清单（Gotchas checklist）
+
+### 音频 / WAV
+- [ ] 构图播放的是 **WAV**，不是 MP3（开头重复播放的陷阱）。
+- [ ] 所有 WAV 的 `start_time` 都是 `N/A`/零（用 `ffprobe` 确认）。
+- [ ] 音轨形状与音频布局相匹配（分幕 vs 单一连续文件）。
+- [ ] 冷开场用 `chapterIntroFrames=0`；其余各幕都用 `120`。
+- [ ] WAV 已经**做过母带处理**（Step 0g），达到约 -14 LUFS / -1 dBTP 的透明目标值，并且在替换之前已验证每一幕的 `durΔ < 0.01s`（母带处理不能改变时间轴）。
+- [ ] 提交之前，WAV 已被 Git LFS 覆盖追踪。
+
+### TTS 路径（如果音频是给定的可跳过本节）
+- [ ] 在分段之前已经针对语音流畅度编辑过稿子（断续的碎句已合并、列表的句号已改为分号、过短的段落已合并）。
+- [ ] 已决定好路径：**无韵律**（ep4——`**`/`[停顿]` 不生效）还是**有韵律**（#13——`**`→音频强调，`[停顿]`→固化静音）。有韵律路径请以 `tts-wittgenstein.js` 为模板。
+- [ ] `**加粗**` 的处理方式与所选路径一致（要么不生效并直接剥离，要么拆分成韵律片段后再剥离用于显示）。
+- [ ] `[停顿]` / `[长停顿]` 的处理方式与所选路径一致（要么不生效，要么变成强制分段边界 + 固化的尾部静音，约 180ms/450ms）。
+- [ ] `text` 参数中**没有**内联的 `<prosody>` SSML——它会被逐字念出来。改用 MCP 的 `rate`/`pitch`/`volume` 参数（整句级别）+ 逐段拆分来实现句内变化。
+- [ ] 韵律路径：`parseSegments()` 会把仅含标点的片段并入相邻片段（避免 "No audio was received"）；TTS 调用都包了一层重试。
+- [ ] 韵律路径：内部分段拼接点先修剪紧凑，**然后**再补上一个按上下文决定的 `joinBeat`（揭示之前约 0.32 秒，——/：之后约 0.26 秒），确保铺垫→揭示的节拍不会被压扁。用 `ffmpeg silencedetect` 验证（揭示处的拼接点约 0.39 秒）。
+- [ ] 口播正文中没有裸露的拉丁字母缩写（例如"早期W"）——TTS 会把它们读成字母；请写出完整的名字。
+- [ ] 每一个出现在关键词中的多音字都在 `PRONUNCIATION_SUBS` 里有对应条目——`ttsText` 使用替代字，`displayText` 使用原字。
+- [ ] 发音替换已经在 `CONTEXTUAL_FOLDS` 中做了还原（这样对齐游标才能匹配口播稿的原始字符；替代字本身和 Whisper 为它生成的任何同音字都要折叠，例如 属数/熟熟→数数）。
+- [ ] 每一幕的分段清单 `chunks.json` 都已保存（使精确重新生成成为可能）。
+- [ ] 拼接之后已确认 WAV 的 `start_time=N/A`（不是想当然认为它是对的）。
+- [ ] 插入的节拍/静音会**增加**该幕的时长——任何韵律/节拍编辑之后，都要重新跑一遍拼接 → 转写 → 构建，并重新同步 `AUDIO_LEN_SEC`。
+
+### 构建字幕脚本
+- [ ] 小节标题查找使用了 `normalizeHeading()`（花引号陷阱）。
+- [ ] `processBlock()` 在构建显示文本之前剥离了 `**...**`。
+- [ ] 构建脚本中的帧几何参数与项目实际画幅匹配（1440 还是 1920）。
+- [ ] 只有在口播稿是纯文本时才用自动强调；如果带有 `[强调]` 标签则用标签驱动方式。
+- [ ] 每一个被念出来的数字都在 CONTEXTUAL_FOLDS 中有对应条目；较长的模式排在前面。
+- [ ] 如果 Whisper 出现了繁体漂移（人声音频），存在一份繁体→简体的 `SAFE_FOLDS` 映射表。
+- [ ] 已经为无生命的 `它→他` 短语，以及任何 集/级、合上/和尚 这类同音听错，埋好了同音字折叠映射（这是那个无声的游标跳跃陷阱）。在一份有很多男性指代对象的稿子上（维特根斯坦/塞尔/哈纳德……），**绝不要**添加裸的 `他→它` 映射——要用**最长**的具体短语折叠，并且要先验证错误形式在口播稿中确实不存在。
+- [ ] 如果 Whisper 把古文/成语引用听成了同音字，也要做折叠映射（#13 案例：得意忘言→德意妄言，王弼→王毕，荀粲→荀灿，得鱼而忘筌→得鱼而忘全）。
+- [ ] 仅用于显示层面的剥离（破折号）是在对齐**之后**、`autoTagEmphases` **之前**应用到 `c.text` 上的（不影响音频/时间戳；只需要重新跑一遍构建步骤）。
+- [ ] **每一幕的单调性扫描都是干净的**——`nonmono:0 degen:0`，没有超过 6.5 秒的单个分段（这能捕捉到那个不会报警告的同音字游标跳跃陷阱）。
+- [ ] 构建之后已核对每一幕的分段数量（零分段 = 无声的标题不匹配）。
+- [ ] 从不手动编辑 `{actId}.subs.ts`——去编辑口播稿/映射表，然后重新生成。
+
+### STT 时间戳完整性
+- [ ] 每一幕的 `words.json` 的 `durationSec` 都约等于真实的 WAV 时长（差距超过 1.5 秒 = Whisper 尾部截断；需要拼接最后一个分段的独立转写结果）。
+- [ ] 尾部拼接脚本**动态**计算 `OFFSET = ffdur(actWav) − ffdur(finalChunkMp3)`（**不要**写死——每次重新生成时长都会变化；一个过时的偏移量会悄无声息地让拼接上去的尾部时间错位）。
+- [ ] 尾部截断可能在重新生成之后复发（它是由格式/长度决定的，不是随机的）——每次完整重新生成之后都要重新检查、重新拼接，然后重新构建。
+- [ ] 每次重新转写或尾部拼接之后，`acts.ts` 里的 `AUDIO_LEN_SEC[actId]` 都已重新同步为新的 `durationSec`。
+
+### 生成的素材（gpt-image-2 图版/抠图）
+- [ ] 每一个安装进项目的素材都符合其规格要求的**尺寸 + 比例**（竖版图版应为 1024×1536，而不是横版变体）。
+- [ ] B 组羊皮纸图版**不含品红色**（它们会被合成为文档）；只有 A 组抠图使用 `#FF00FF` 色键抠图 + `cutout-bg.js`。
+- [ ] 复制进 `assets/` 的是**正确**的那次生成结果——当一批生成在 `out/` 中产出多个变体时，要核实实际安装的那一个（尺寸、背景、版式），而不要想当然认为它是对的。
+
+### Remotion 项目
+- [ ] `acts.ts` 中的 `AUDIO_LEN_SEC` 已从 `words.json` 的 `durationSec` 值填充完毕。
+- [ ] 所有幕的构图都已在 `Root.tsx` 中注册，时长正确。
+- [ ] `npx tsc --noEmit` 干净通过（弃用警告可以接受，类型错误不行）。
+- [ ] `npx remotion compositions` 列出了所有预期的 ID，时长都正确。
+- [ ] 在幕中间某一帧做静帧渲染，确认地形 + 粒子 + 字幕都能正确渲染。
+- [ ] 验证之后已清理临时静帧 PNG。

@@ -1,0 +1,98 @@
+---
+alwaysApply: false
+---
+
+# 论点编码字幕（Argument-Coded Subtitles）
+
+按照 Director's Sheet §6 规定的、贯穿全频道的固定字幕轨道。**不要**在 `Act*.tsx` 中为单个 act 添加 `SubtitleTrack` 以及运行时的 SRT `fetch`/`delayRender`。
+
+## 架构
+
+| 层级 | 路径 | 作用 |
+| -------- | ------------------------------ | ------------------------------------------------------------------- |
+| 类型 | `scenes/_subs/_types.ts` | `SubChunk`、`EmphasisRange`、`SubsFile` |
+| 数据 | `scenes/_subs/{actId}.subs.ts` | 帧精确的分块内容 + 短语级强调 |
+| 渲染器 | `scenes/_subtitles.tsx` | `<EduSubtitles actId="…" />` —— 在 `SUBS_BY_ACT` 中注册该 act |
+| Act | `ActN.tsx` | 一行代码：在缩放后的设计根节点内写 `<EduSubtitles actId="actN" />` |
+
+参考实现：`open.subs.ts`、`act4.subs.ts`、`act5.subs.ts`。Cascade 项目在 `3-the-cascade/scenes/_subtitles.tsx` 中使用同样的模式。
+
+## 为新 act 创建字幕
+
+### 1. 时间轴来源
+
+- 优先使用 `my-video/public/projects/{project}/transcripts/*.srt` 中的 **SRT** 文件（如果有逐词级 JSON 则更佳）。
+- 使用 `scenes/actN/timing.ts` 中的 `ACTN_AUDIO_START_SECONDS` / `ACTN_AUDIO_END_SECONDS` 将其裁切到该 act 的时间窗口内。
+- 将时间转换为 **act 本地秒数**（减去音频起始时间）。`startFrame` / `endFrame` = `Math.round(sec * 60)`，帧率为 60fps。
+
+### 2. 分块（密集节奏）
+
+- 一条 SRT 字幕 → 一个分块（micro-beat）。**不要**把长段旁白合并成单条字幕。
+- 目标是可读的行长度；使用字号阶梯（见下文）缩小过长的行。
+- 中性的连接性从句可以使用 `emphases: []`。
+
+### 3. 短语级强调（必需）
+
+只高亮**承载论点的短语**，绝不高亮整个分块。
+
+```typescript
+// ❌ 整行强调
+emphases: [{ startInChunk: 0, endInChunk: text.length, type: "tension" }],
+
+// ✅ 短语级（如 open.subs.ts 所示）
+text: "功能一 组块安装",
+emphases: [
+  { startInChunk: 0, endInChunk: 3, type: "system" },   // "功能一"
+  { startInChunk: 4, endInChunk: 8, type: "insight" }, // "组块安装"
+],
+```
+
+`startInChunk` / `endInChunk` 是 `text` 中的**字符偏移量**（起点包含，终点不包含）。鼓励在每个分块中使用多个不重叠的区间。
+
+### 4. 强调角色（语义调色板）
+
+| `type` | 颜色角色 | 用于 |
+| --------- | ---------- | ------------------------------------------------------------------------- |
+| `system`  | 钢蓝色 | 分类标签、功能 ID、中性结构（"八个功能"、"历史审计"） |
+| `tension` | 琥珀色 | 现代/制度性张力（考试、内卷、标准化、现代学校、劳动力） |
+| `insight` | 青绿色 | 核心机制 / 古代四要素（组块、协议、文化、人格、能力传递、跨代） |
+
+从 SRT 文本自动打标签时，优先匹配分块内**最短的匹配短语**；对高风险的关键行手动覆盖。没有论点承载力的说明性内容 → 不加强调。
+
+### 5. 字号阶梯
+
+| `text` 中的字符数 | `fontSize` |
+| --------------- | ---------- |
+| ≤6              | 56         |
+| ≤10             | 52         |
+| ≤16             | 48         |
+| ≤22             | 44         |
+| ≤30             | 40         |
+| >30             | 36         |
+
+只有当分块在 36px 下仍超出舒适宽度时，才设置 `overflow: true`。
+
+### 6. 接线检查清单
+
+1. 在 `scenes/_subs/actN.subs.ts` 中添加 `ACTN_SUBS` 导出。
+2. 在 `scenes/_subtitles.tsx` 的 `SUBS_BY_ACT` 中导入并注册。
+3. 在 `ActN.tsx` 中：`import { EduSubtitles } from "./scenes/_subtitles"` 并渲染 `<EduSubtitles actId="actN" />`。
+4. 如果存在，移除旧版的 `SrtSubtitleTrack`、`parseActNSrt`，以及 act 本地的 `SubtitleTrack`。
+5. 预览该 act —— 验证淡入淡出时机、短语颜色，以及是否存在缺失的 `actId` 键。
+
+## 渲染器契约（已锁定）
+
+未经 Director's Sheet 更新，不得更改：
+
+- 位置：底部居中，`y = 950`（逻辑分辨率 1080）
+- 宽度：帧宽的 82%；字体为 Noto Serif SC；正文 500 / 强调 700
+- 淡入淡出：8 帧淡入（提前 6 帧），12 帧淡出（延后 6 帧）
+- NC 窗口：传入 `inNCWindow` 以保持文字并去除遮罩（与影院层 NC beat 使用同一标志位）
+
+## 反模式
+
+- 在合成组件中进行运行时 SRT 解析
+- 跨越整个 `text.length` 的整块 `emphases`
+- 与 `EduSubtitles` 样式重复的独立/本地 `SubtitleTrack`
+- 当 SRT 已提供 beat 级别的字幕时，仍使用整句大小的分块
+- 将字幕注册在与 `<EduSubtitles actId="…" />` 不同的 `actId` 下

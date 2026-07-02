@@ -1,0 +1,21 @@
+{
+  "name": "videogeneration",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "module",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "ai": "^6.0.154",
+    "dotenv": "^17.4.1",
+    "express": "^5.2.1",
+    "undici": "^8.0.2",
+    "zod": "^4.3.6"
+  }
+}
