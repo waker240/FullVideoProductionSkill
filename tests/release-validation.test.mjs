@@ -27,9 +27,14 @@ test('rejects missing, duplicate, invalid names and non-string metadata',()=>{
 test('finds missing resources and links that leave installed skill trees',()=>fixture(root=>{
  write(root,'README.md','# Readme');write(root,'skills/sample-skill/SKILL.md',valid+'\n[exists](references/guide.md)\n[missing](references/missing.md)\n[not installed](../../README.md)\n');
  write(root,'skills/sample-skill/references/guide.md','# Guide');
- const result=validateRelease(root,{inventory:false,secrets:false});
- assert.equal(result.findings.filter(x=>x.rule==='RESOURCE_MISSING_OR_CASE').length,1);
- assert.equal(result.findings.filter(x=>x.rule==='RESOURCE_OUTSIDE_INSTALLED_SKILLS').length,1);
+ // The host's spelling/alias of ancestors is not a packaged resource name.
+ // Windows runners may use short temp paths or differently cased ancestors.
+ const roots=process.platform==='win32'?[root,root.toUpperCase()]:[root];
+ for(const releaseRoot of roots){
+  const result=validateRelease(releaseRoot,{inventory:false,secrets:false});
+  assert.equal(result.findings.filter(x=>x.rule==='RESOURCE_MISSING_OR_CASE').length,1);
+  assert.equal(result.findings.filter(x=>x.rule==='RESOURCE_OUTSIDE_INSTALLED_SKILLS').length,1);
+ }
 }));
 test('detects case mismatches, inline packaged references, and root shadowing',()=>fixture(root=>{
  write(root,'SKILL.md',valid);write(root,'skills/sample-skill/SKILL.md',valid+'\n[case](references/Guide.md)\n`references/not-here.md`\n');write(root,'skills/sample-skill/references/guide.md','# Guide');

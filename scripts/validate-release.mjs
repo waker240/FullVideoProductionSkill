@@ -11,10 +11,14 @@ const FIELDS=new Set(['name','description','license','compatibility','metadata',
 export const EXPECTED_SKILLS=['faceless-explainer','fish-audio-api','general-video','hyperframes','hyperframes-animation','hyperframes-core','hyperframes-creative','hyperframes-media','hyperframes-registry','media-use','motion-graphics','music-to-video','remotion-to-hyperframes'];
 const inside=(base,target)=>target===base||target.startsWith(base+path.sep);
 const lineAt=(text,index)=>text.slice(0,index).split('\n').length;
-function isExactPath(target){
+function isExactPath(target,root){
   if(!fs.existsSync(target))return false;
-  const parsed=path.parse(path.resolve(target));let current=parsed.root;
-  for(const segment of path.resolve(target).slice(parsed.root.length).split(path.sep).filter(Boolean)){
+  // Enforce portable spelling inside the release, not the OS's ancestor names.
+  // Windows temp roots can contain short aliases or differently cased segments.
+  const relative=path.relative(root,target);
+  if(relative==='..'||relative.startsWith('..'+path.sep)||path.isAbsolute(relative))return false;
+  let current=path.resolve(root);
+  for(const segment of relative.split(path.sep).filter(Boolean)){
     try{if(!fs.readdirSync(current).includes(segment))return false;}catch{return false;}current=path.join(current,segment);
   }
   return true;
@@ -56,7 +60,7 @@ export function validateMarkdown(text,{file,absolute,root,skillRoot}={}){
     if(path.isAbsolute(target)||/^[a-z]:[/\\]/i.test(target)){add(lineAt(clean,index),'RESOURCE_ABSOLUTE_PATH');return;}
     const candidates=routedRoot?[path.resolve(routedRoot,target)]:fromRoot&&skillRoot?[path.resolve(skillRoot,target),path.resolve(path.dirname(absolute),target)]:[path.resolve(path.dirname(absolute),target)];
     if(candidates.every(candidate=>!inside(root,candidate))){add(lineAt(clean,index),'RESOURCE_OUTSIDE_RELEASE');return;}
-    const existing=candidates.find(candidate=>inside(root,candidate)&&isExactPath(candidate));
+    const existing=candidates.find(candidate=>inside(root,candidate)&&isExactPath(candidate,root));
     if(!existing){add(lineAt(clean,index),'RESOURCE_MISSING_OR_CASE');return;}
     if(skillRoot&&!inside(path.join(root,'skills'),existing))add(lineAt(clean,index),'RESOURCE_OUTSIDE_INSTALLED_SKILLS');
   };

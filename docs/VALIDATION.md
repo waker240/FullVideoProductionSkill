@@ -1,13 +1,13 @@
 # v2 验证记录
 
-验证日期：2026-09-26。下面区分实际执行的检查与发布后的检查，不把本地通过写成远程仓库已经发布。
+验证日期：2026-09-26。下面区分本地打包验收与 GitHub 发布复验。
 
 ## 范围与规范
 
 - 按 [Agent Skills 规范](https://agentskills.io/specification) 整理 `skills/<name>/SKILL.md`；校验名称、描述、YAML frontmatter、目录和资源引用。
 - 安装验证使用 [Vercel Skills CLI](https://github.com/vercel-labs/skills) 的固定版本 `skills@1.7.0`；用户 README 保留常规 `npx skills add` 用法。
 - 开发者 API 只以本地模拟响应验证请求、错误与文件行为，没有使用真实 Key 调用付费接口。
-- CI 配置了 Windows/Ubuntu、Node.js 22.20.0 的维护检查；本次实际执行环境为 Windows。GitHub Actions 的运行结果须在发布后查看，不能据此声称已经在 Linux 完成执行。
+- CI 配置了 Windows/Ubuntu、Node.js 22.20.0 的维护检查；初次打包验收环境为 Windows、Node.js 24.12.0。远程检查以 [GitHub Actions 对应提交的结果](https://github.com/waker240/FullVideoProductionSkill/actions/workflows/validate.yml) 为准，不将本地通过等同于所有平台通过。
 
 ## 已执行：不需要 Key 的渲染
 
@@ -57,12 +57,16 @@ npm run test:local
 
 扫描不能证明所有未来新增内容都不含敏感信息。提交前应审阅实际 Git 暂存区，尤其是配置、日志、个人声音和第三方素材。
 
-## 发布后的检查
+## GitHub 发布复验
 
-本次不会推送 GitHub，也不会运行 `npm publish`。由维护者把此目录的内容放到目标仓库后，再运行：
+已将 v2 内容发布到目标仓库 `main`，原 v1 仍保留在 Git 历史中。通过独立临时工作区，使用真实 GitHub 来源验证了以下发现命令及全部技能安装：
 
 ```bash
 npx skills add waker240/FullVideoProductionSkill --list
 ```
 
-然后在独立项目里安装并验证。详见 [发布指南](PUBLISHING.md)。
+远程发现和安装均得到 13 个 v2 技能，没有旧版技能。446 个安装后的技能文件中，418 个与本地字节一致，28 个仅有 CRLF/LF 换行符差异；没有缺失、额外文件或内容差异。安装后的项目脚手架及 `doctor --stage base` 通过，没有真实 `.env` 或付费 API 请求。
+
+发布复验同时补充了 Windows 目录别名／大小写回归：只在发行目录内部检查资源名大小写，不把机器上层目录的路径表示当作包内引用错误。全部 10 项发行校验测试通过，包内大小写错误仍会被拒绝。
+
+不需要运行 `npm publish`。维护者后续更新可沿用 [发布指南](PUBLISHING.md)，并查看对应提交的 Windows/Ubuntu CI 结果。
