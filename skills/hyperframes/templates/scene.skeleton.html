@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="zh">
+  <head><meta charset="UTF-8" /><!-- scene skeleton: everything lives INSIDE <template> --></head>
+  <body>
+    <template>
+      <style>
+        /* Copy the project's locked font faces. Paths resolve from the project root. */
+
+        /* Prefix every scene-owned id/class with the scene id. Palette = DESIGN.md. */
+        #s0-fill { position: absolute; inset: 0; background: #070a10; }
+        #s0-stage { position: absolute; inset: 0; }
+      </style>
+
+      <div id="root" data-composition-id="s0-hook" data-width="1920" data-height="1080" data-duration="SCENE_DUR">
+        <div id="s0-fill"></div>
+        <div id="s0-stage">
+          <!-- Build only the layers this beat needs. Deliberate void is valid. -->
+          <!-- Add chrome/telemetry only when DESIGN.md assigns it real state. -->
+          <!-- Add canvas/SVG/media only when its representation wins the paused-frame test. -->
+        </div>
+
+        <script>
+          (function () {
+            window.__timelines = window.__timelines || {};
+            var DUR = SCENE_DUR;               // section length from boundaries.json
+            var SCENE_START = SCENE_START_SEC; // GLOBAL startSec
+            var wf = function (g) { return g - SCENE_START; }; // GLOBAL word time -> LOCAL
+
+            var S = window.__s0state = { reveal: 0 };
+            var tl = gsap.timeline({ paused: true });
+
+            // s0: start the narration-matched operation at frame zero when the cue map requires it.
+            // tl.fromTo("#s0-hero", { opacity: 0, scale: 1.12 },
+            //   { opacity: 1, scale: 1, duration: 0.75, ease: "power3.out" }, wf(1.62));
+
+            // Add camera motion only when it reveals spatial proof, changes meaning, or hands off velocity.
+            // A uniform whole-scene push is not a default.
+
+            // Duration spine: replace or accompany this with semantic tweens. If using canvas/WebGL,
+            // drive a pure render(t) from this seekable proxy; never use clocks or random runtime state.
+            var proxy = { t: 0 };
+            tl.to(proxy, { t: DUR, duration: DUR, ease: "none" }, 0);
+
+            window.__timelines["s0-hook"] = tl;
+          })();
+        </script>
+      </div>
+    </template>
+  </body>
+</html>

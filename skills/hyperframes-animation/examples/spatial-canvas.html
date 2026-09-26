@@ -1,0 +1,237 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=1920, height=1080" />
+    <title>Spatial Canvas — Return With Consequence</title>
+    <script src="https://cdn.jsdelivr.net/npm/gsap@3.14.2/dist/gsap.min.js"></script>
+    <style>
+      * { box-sizing: border-box; }
+      html, body { margin: 0; width: 1920px; height: 1080px; overflow: hidden; }
+      #root { position: relative; width: 1920px; height: 1080px; overflow: hidden; color: #f1e4ca; font-family: Arial, Helvetica, sans-serif; }
+      .fill { position: absolute; inset: 0; background: #17130f; }
+      .viewport { position: absolute; inset: 0; overflow: hidden; }
+      .jolt { position: absolute; inset: 0; }
+      .world {
+        position: absolute;
+        width: 4200px;
+        height: 2400px;
+        transform-origin: 0 0;
+        will-change: transform;
+        isolation: isolate;
+        background: #2d231a;
+      }
+      .world-plate { position: absolute; inset: 0; z-index: 0; width: 100%; height: 100%; object-fit: cover; filter: saturate(.82) contrast(1.1) brightness(.82); }
+      .world-texture {
+        position: absolute; inset: 0; z-index: 1; pointer-events: none;
+        /* Portable layout example: procedural texture, no private generated image. */
+        background: repeating-linear-gradient(97deg, #d1be99 0 1px, #534534 1px 5px);
+        background-size: 1254px 1254px;
+        opacity: .24;
+        filter: saturate(.62) contrast(1.12);
+        mix-blend-mode: soft-light;
+      }
+      .world-atmosphere {
+        position: absolute; inset: 0; z-index: 1; pointer-events: none;
+        background:
+          radial-gradient(circle at 18% 22%, rgba(240,185,100,.18), transparent 25%),
+          radial-gradient(circle at 77% 63%, rgba(78,111,94,.18), transparent 32%),
+          linear-gradient(112deg, rgba(12,9,7,.08), rgba(12,9,7,.34));
+        mix-blend-mode: screen;
+      }
+      .world::after {
+        content: ""; position: absolute; inset: 0; z-index: 8; pointer-events: none;
+        background: repeating-linear-gradient(104deg, rgba(255,255,255,.018) 0 1px, transparent 1px 8px);
+        box-shadow: inset 0 0 310px rgba(0,0,0,.7), inset 0 0 0 28px rgba(20,14,10,.42);
+        mix-blend-mode: soft-light;
+      }
+      .region { position: absolute; z-index: 4; width: 920px; min-height: 570px; }
+      .region-a { left: 420px; top: 520px; transform: rotate(-.8deg); transform-origin: center; }
+      .region-b { left: 2840px; top: 1120px; transform: rotate(.65deg); transform-origin: center; }
+      .region-ghost { position: absolute; z-index: 3; width: 920px; min-height: 570px; pointer-events: none; }
+      .ghost-a { left: 420px; top: 520px; }
+      .ghost-b { left: 2840px; top: 1120px; }
+      .eyebrow { display: inline-block; padding: 12px 18px 10px; color: #efe0be; background: #3c291d; border-left: 8px solid #a77c42; box-shadow: 8px 10px 24px rgba(0,0,0,.28); font: 700 25px/1 monospace; letter-spacing: .16em; text-transform: uppercase; }
+      .card, .card-ghost {
+        padding: 64px 70px 72px; min-height: 540px;
+        color: #241a14;
+        box-shadow: 16px 22px 0 rgba(17,11,7,.27), 0 34px 90px rgba(0,0,0,.52);
+        clip-path: polygon(.7% 1.4%, 98.9% 0, 100% 96.8%, 97.6% 99.2%, 1.2% 100%, 0 4%);
+      }
+      .card {
+        position: relative; margin-top: 24px;
+        background:
+          linear-gradient(98deg, rgba(83,56,28,.08), transparent 13%, transparent 86%, rgba(85,52,24,.1)),
+          repeating-linear-gradient(0deg, rgba(90,61,35,.035) 0 1px, transparent 1px 11px),
+          #e8d6b5;
+        border: 2px solid rgba(117,80,42,.48);
+      }
+      .card::before { content: ""; position: absolute; z-index: 1; left: 72px; top: -31px; width: 210px; height: 66px; transform: rotate(-4deg); background: rgba(211,185,132,.72); box-shadow: inset 0 0 0 2px rgba(100,70,35,.12); }
+      .card::after { content: ""; position: absolute; right: 0; bottom: 0; width: 86px; height: 70px; background: linear-gradient(135deg, rgba(112,78,43,.05) 49%, rgba(93,59,29,.22) 50%); }
+      .card > * { position: relative; z-index: 2; }
+      .card-ghost { position: absolute; left: 14px; top: 68px; width: 920px; pointer-events: none; transform: rotate(-2.2deg); background: #372b21; border: 2px solid #594331; }
+      .region-b .card { background: linear-gradient(102deg, rgba(47,72,61,.09), transparent 15%, transparent 84%, rgba(36,67,53,.1)), repeating-linear-gradient(0deg, rgba(40,70,58,.03) 0 1px, transparent 1px 12px), #bcc6b5; border-color: rgba(64,94,79,.48); }
+      .ghost-b .card-ghost { transform: rotate(1.7deg); background: #25352d; border-color: #465b4d; }
+      .pin { position: absolute; z-index: 5 !important; top: -29px; left: 50%; width: 50px; height: 50px; margin-left: -25px; border-radius: 50%; border: 4px solid #78532d; background: radial-gradient(circle at 35% 28%, #f0cf78 0 10%, #b88642 25%, #6e4725 76%); box-shadow: 5px 8px 0 rgba(0,0,0,.3), 0 0 0 8px rgba(26,16,9,.14); }
+      .tab { position: absolute; z-index: 1 !important; right: 54px; top: -40px; width: 190px; height: 56px; transform: rotate(1.4deg); background: #617666; border: 3px solid #3f5547; box-shadow: 8px 9px 0 rgba(0,0,0,.2); }
+      .overview-label { position: absolute; left: 70px; top: 190px; font: 800 54px/1 monospace; letter-spacing: .12em; color: #43372c; text-transform: uppercase; }
+      h2 { margin: 0; max-width: 760px; font: 800 88px/.94 serif; letter-spacing: -.035em; opacity: 0; }
+      .fact { margin-top: 34px; max-width: 700px; font-size: 34px; line-height: 1.35; color: #493d32; opacity: 0; }
+      .meta { position: absolute; right: 54px; bottom: 42px; font: 700 24px/1 monospace; letter-spacing: .12em; color: #594939; opacity: 0; }
+      .stamp { position: absolute; right: 18px; top: 88px; padding: 18px 24px; border: 8px double #a64232; color: #a64232; background: rgba(232,214,181,.48); font: 900 34px/1 monospace; letter-spacing: .12em; transform: rotate(12deg) scale(0); opacity: 0; }
+      .links { position: absolute; inset: 0; z-index: 2; width: 4200px; height: 2400px; overflow: visible; }
+      .link-shadow, .link-proof { fill: none; stroke-linecap: round; stroke-linejoin: round; }
+      .link-shadow { stroke: rgba(0,0,0,.46); stroke-width: 22; transform: translate(8px, 12px); }
+      .link-proof { stroke: #a77c42; stroke-width: 10; }
+      .link-confirmed, .link-confirmed-shadow, .link-confirmed-fiber { fill: none; stroke-linecap: round; stroke-linejoin: round; opacity: 0; }
+      .link-confirmed-shadow { stroke: rgba(14,8,6,.55); stroke-width: 23; transform: translate(9px, 11px); }
+      .link-confirmed { stroke: #a64232; stroke-width: 12; }
+      .link-confirmed-fiber { stroke: rgba(244,190,153,.75); stroke-width: 2.5; stroke-dasharray: 5 19; }
+      .landmark { position: absolute; z-index: 5; left: 1870px; top: 260px; width: 470px; padding: 38px 44px; color: #17110d; background: #b88a4e; border: 5px solid #43301f; box-shadow: 15px 18px 0 rgba(0,0,0,.3), inset 0 0 0 3px rgba(241,219,165,.3); font: 800 27px/1.2 monospace; letter-spacing: .09em; text-align: center; }
+      .landmark::before, .landmark::after { content: ""; position: absolute; top: 50%; width: 16px; height: 16px; margin-top: -8px; border-radius: 50%; background: #4a3421; box-shadow: inset 2px 2px 0 rgba(255,230,166,.22); }
+      .landmark::before { left: 16px; } .landmark::after { right: 16px; }
+      .landmark-copy::before { content: attr(data-label); }
+      .fixed-chrome { position: absolute; inset: 0; pointer-events: none; box-shadow: inset 0 0 180px rgba(0,0,0,.64), inset 0 0 0 2px rgba(232,221,199,.1); margin: 28px; }
+      .chapter { position: absolute; left: 64px; top: 58px; padding: 16px 22px 14px; border-left: 6px solid #a77c42; background: rgba(23,19,15,.82); box-shadow: 10px 12px 34px rgba(0,0,0,.3); font: 700 21px/1 monospace; letter-spacing: .2em; color: #d9be87; text-transform: uppercase; }
+      .detail-overlay {
+        position: absolute; inset: 0;
+      }
+      .detail-overlay-inner { position: absolute; inset: 0; display: grid; place-items: center; opacity: 0; }
+      .detail-backdrop { position: absolute; inset: 0; background: radial-gradient(circle at 48% 44%, rgba(61,73,62,.9), rgba(13,16,14,.99) 68%), repeating-linear-gradient(97deg, rgba(255,255,255,.02) 0 1px, transparent 1px 9px); }
+      .dossier { position: relative; width: 1220px; min-height: 730px; padding: 86px 96px; background: linear-gradient(100deg, rgba(94,62,30,.07), transparent 16%, transparent 85%, rgba(94,62,30,.08)), repeating-linear-gradient(0deg, rgba(87,57,28,.032) 0 1px, transparent 1px 11px), #efe2c7; color: #2a2119; border: 2px solid #9e7a4b; box-shadow: 24px 32px 0 rgba(0,0,0,.25), 0 60px 180px rgba(0,0,0,.72); clip-path: polygon(.5% 1%, 99% 0, 100% 98%, 2% 100%, 0 3%); transform: rotate(-.45deg); }
+      .dossier::before { content: ""; position: absolute; left: 130px; top: -24px; width: 280px; height: 70px; transform: rotate(-3deg); background: rgba(203,177,125,.75); }
+      .dossier .eyebrow { position: relative; color: #f3ddc4; background: #78382f; border-color: #a64232; }
+      .dossier h3 { margin: 42px 0 26px; font: 800 112px/.92 serif; letter-spacing: -.045em; }
+      .dossier p { margin: 0; max-width: 920px; font-size: 42px; line-height: 1.32; color: #64513f; }
+      .evidence-rule { margin-top: 62px; height: 14px; width: 920px; background: #a64232; transform: scaleX(0); transform-origin: left center; }
+      .final-label { position: absolute; left: 50%; bottom: 78px; transform: translateX(-50%); padding: 22px 30px 18px; border-top: 3px solid #a77c42; background: rgba(23,19,15,.86); box-shadow: 0 20px 55px rgba(0,0,0,.38); opacity: 0; font: 800 38px/1 monospace; letter-spacing: .16em; color: #f1e4ca; text-transform: uppercase; }
+    </style>
+  </head>
+  <body>
+    <div id="root" data-composition-id="spatial-canvas-example" data-start="0" data-width="1920" data-height="1080"
+         data-duration="12" data-hf-spatial-canvas="case-board">
+      <div class="fill"></div>
+      <div class="viewport">
+        <div class="jolt" id="case-jolt">
+          <div class="world" id="case-world" data-hf-spatial-world="case-board">
+            <div class="world-plate" aria-hidden="true" style="background:radial-gradient(ellipse at 27% 36%,#84684b,transparent 52%),radial-gradient(ellipse at 76% 64%,#4c6756,transparent 48%),linear-gradient(110deg,#33271b,#725739 50%,#292b24)"></div>
+            <div class="world-texture" aria-hidden="true"></div>
+            <div class="world-atmosphere" aria-hidden="true"></div>
+            <svg class="links" viewBox="0 0 4200 2400" aria-hidden="true" data-layout-allow-occlusion data-hf-spatial-connector="case-board:evidence-path">
+              <path class="link-shadow" d="M 1320 840 C 1900 760, 2240 1420, 2840 1460" />
+              <path class="link-proof" id="case-link" d="M 1320 840 C 1900 760, 2240 1420, 2840 1460" />
+              <path class="link-confirmed-shadow" id="case-confirmed-shadow" d="M 1320 880 C 1910 800, 2250 1460, 2840 1500" />
+              <path class="link-confirmed" id="case-confirmed" d="M 1320 880 C 1910 800, 2250 1460, 2840 1500" />
+              <path class="link-confirmed-fiber" id="case-confirmed-fiber" d="M 1320 880 C 1910 800, 2250 1460, 2840 1500" />
+            </svg>
+            <div class="landmark" aria-hidden="true"><span class="landmark-copy" data-label="CASE 47 · SUPPLY CHAIN"></span></div>
+            <div class="region-ghost ghost-a" aria-hidden="true"><div class="card-ghost"><div class="pin"></div></div></div>
+            <div class="region-ghost ghost-b" aria-hidden="true"><div class="card-ghost"><div class="pin"></div><div class="tab"></div></div></div>
+            <section class="region region-a" id="case-region-a" data-hf-spatial-region="case-board:origin">
+              <div class="eyebrow">Region A · Origin</div>
+              <div class="card">
+                <div class="pin" data-hf-spatial-landmark="case-board:origin-pin"></div>
+                <div class="overview-label">Origin evidence</div>
+                <h2>The invoice that should not exist.</h2>
+                <div class="fact">One vendor, two identities, and a payment routed through the same address.</div>
+                <div class="meta">DOC · 04/17</div>
+                <div class="stamp" id="case-stamp">CONFIRMED</div>
+              </div>
+            </section>
+            <section class="region region-b" id="case-region-b" data-hf-spatial-region="case-board:relationship">
+              <div class="eyebrow">Region B · Relationship</div>
+              <div class="card">
+                <div class="pin"></div>
+                <div class="tab" data-hf-spatial-landmark="case-board:relationship-tab"></div>
+                <div class="overview-label">Beneficiary link</div>
+                <h2>Different names. One beneficiary.</h2>
+                <div class="fact">The cutaway turns a suspicious coincidence into a traceable connection.</div>
+                <div class="meta">LINK · VERIFIED</div>
+              </div>
+            </section>
+          </div>
+        </div>
+      </div>
+      <div class="detail-overlay clip" id="case-detail-clip" data-start="4.15" data-duration="2.11" data-track-index="2"
+           data-hf-spatial-excursion="case-board:dossier" data-hf-spatial-space="view">
+        <div class="detail-overlay-inner" id="case-detail">
+          <div class="detail-backdrop"></div>
+          <article class="dossier">
+            <div class="eyebrow">Excursion · Dossier 04/17</div>
+            <h3>Both signatures resolve to the same account.</h3>
+            <p>The close-up contributes evidence the overview could not carry, then returns it to the world.</p>
+            <div class="evidence-rule" id="case-evidence-rule"></div>
+          </article>
+        </div>
+      </div>
+      <div class="fixed-chrome"></div>
+      <div class="chapter">Spatial Canvas · Return With Consequence</div>
+      <div class="final-label" id="case-final">One system · two fronts</div>
+    </div>
+
+    <script>
+      window.__timelines = window.__timelines || {};
+      const tl = gsap.timeline({ paused: true });
+      const world = document.getElementById("case-world");
+      const cam = { cx: 2100, cy: 1200, zoom: 0.42 };
+      const focus = { x: 960, y: 490 };
+      const OVERVIEW = { cx: 2100, cy: 1200, zoom: 0.42 };
+      const REGION_A = { cx: 880, cy: 820, zoom: 0.9 };
+      const REGION_B = { cx: 3300, cy: 1420, zoom: 0.82 };
+
+      function applyCamera() {
+        world.style.transform = `translate3d(${focus.x - cam.cx * cam.zoom}px,${focus.y - cam.cy * cam.zoom}px,0) scale(${cam.zoom})`;
+      }
+      applyCamera();
+
+      const link = document.getElementById("case-link");
+      const linkLength = link.getTotalLength();
+      link.style.strokeDasharray = String(linkLength);
+      link.style.strokeDashoffset = String(linkLength);
+      const confirmedPaths = ["case-confirmed-shadow", "case-confirmed", "case-confirmed-fiber"].map((id) => document.getElementById(id));
+      confirmedPaths.forEach((path) => {
+        const length = path.getTotalLength();
+        path.style.strokeDasharray = String(length);
+        path.style.strokeDashoffset = String(length);
+      });
+
+      tl.to(".landmark, #case-region-b, #case-region-b .overview-label", { opacity: 0, duration: .18, ease: "power1.in" }, .98);
+      tl.to(cam, { ...REGION_A, duration: 1.55, ease: "power3.inOut", onUpdate: applyCamera }, 1.05);
+      tl.to(link, { attr: { "stroke-dashoffset": 0 }, duration: 2.0, ease: "power2.inOut" }, 1.7);
+      tl.to("#case-region-a .overview-label", { opacity: 0, duration: .2, ease: "power1.out" }, 2.36);
+      tl.to("#case-region-a h2", { opacity: 1, duration: .36, ease: "power2.out" }, 2.48);
+      tl.to("#case-region-a .fact, #case-region-a .meta", { opacity: 1, duration: .38, ease: "power2.out" }, 2.68);
+      tl.fromTo("#case-region-a .card", { filter: "brightness(.78)" }, { filter: "brightness(1)", duration: .55, ease: "power2.out" }, 2.55);
+
+      tl.to("#case-region-a .eyebrow, #case-region-a h2, #case-region-a .fact, #case-region-a .meta", { opacity: 0, duration: .12, ease: "power1.in" }, 4.02);
+      tl.set("#case-region-a .eyebrow, #case-region-a h2, #case-region-a .fact, #case-region-a .meta", { opacity: 0 }, 4.15);
+      tl.set(".viewport", { opacity: 0 }, 4.15);
+      tl.fromTo("#case-detail", { opacity: 0 }, { opacity: 1, duration: .38, ease: "power2.out" }, 4.15);
+      tl.fromTo("#case-detail .dossier", { scale: .86, rotation: -2.2 }, { scale: 1, rotation: -.45, duration: .65, ease: "power3.out" }, 4.15);
+      tl.to("#case-evidence-rule", { scaleX: 1, duration: .9, ease: "power3.out" }, 4.72);
+      tl.to("#case-detail", { opacity: 0, duration: .34, ease: "power2.in" }, 5.92);
+
+      tl.set(".viewport", { opacity: 1 }, 6.26);
+      tl.to(cam, { ...REGION_A, duration: .01, ease: "none", onUpdate: applyCamera }, 6.26);
+      tl.to("#case-region-a .eyebrow, #case-region-a h2, #case-region-a .fact, #case-region-a .meta", { opacity: 1, duration: .16, ease: "power2.out" }, 6.26);
+      tl.fromTo("#case-stamp", { opacity: 0, scale: 0, rotation: 20 }, { opacity: 1, scale: 1, rotation: 12, duration: .55, ease: "back.out(1.8)" }, 6.32);
+      tl.to(confirmedPaths, { opacity: 1, strokeDashoffset: 0, duration: .56, stagger: .025, ease: "power3.inOut" }, 6.48);
+      tl.to("#case-jolt", { x: -11, y: 3, rotation: -.1, duration: .045, ease: "power1.out" }, 6.98);
+      tl.to("#case-jolt", { x: 0, y: 0, rotation: 0, duration: .075, ease: "power2.out" }, 7.025);
+
+      tl.to("#case-region-a, #case-region-a .eyebrow, #case-region-a .overview-label, #case-region-a h2, #case-region-a .fact, #case-region-a .meta, #case-stamp", { opacity: 0, duration: .14, ease: "power1.in" }, 7.55);
+      tl.to(cam, { ...REGION_B, duration: 1.55, ease: "power3.inOut", onUpdate: applyCamera }, 7.05);
+      tl.to("#case-region-b .eyebrow, #case-region-b", { opacity: 1, duration: .2, ease: "power1.out" }, 8.28);
+      tl.to("#case-region-b h2", { opacity: 1, duration: .34, ease: "power2.out" }, 8.38);
+      tl.to("#case-region-b .fact, #case-region-b .meta", { opacity: 1, duration: .36, ease: "power2.out" }, 8.56);
+      tl.fromTo("#case-region-b .card", { filter: "brightness(.72)" }, { filter: "brightness(1)", duration: .5, ease: "power2.out" }, 8.48);
+      tl.to("#case-region-b h2, #case-region-b .fact, #case-region-b .meta", { opacity: 0, duration: .25, ease: "power1.in" }, 9.28);
+      tl.to("#case-region-b .overview-label", { opacity: 1, duration: .3, ease: "power2.out" }, 9.48);
+      tl.to(cam, { ...OVERVIEW, duration: 1.5, ease: "power3.inOut", onUpdate: applyCamera }, 9.35);
+      tl.to(".landmark, .region, .region .eyebrow, .region .overview-label", { opacity: 1, duration: .3, ease: "power2.out" }, 10.85);
+      tl.to("#case-final", { opacity: 1, duration: .55, ease: "power2.out" }, 10.75);
+
+      window.__timelines["spatial-canvas-example"] = tl;
+    </script>
+  </body>
+</html>

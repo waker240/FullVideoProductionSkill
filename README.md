@@ -1,101 +1,148 @@
-# 视频内容策略 — Cursor Skill 包
+# Full Video Production Skills · v2
 
-这是 Cursor 的 **视频内容策略（Video Content Strategy）** skill 的独立发布版本：这个视觉转译层负责把一份脚本（论点 + 人设 + 密度节奏，由你自己的脚本流程建立）转化为一部动画的、代码优先的、基于 Remotion 的解说视频的具体视觉决策。
+从脚本、参考拆解、动态样片和逐镜审阅，到配音、字幕、合成、声音试听与最终检查的一套视频制作技能。用 HyperFrames 把 HTML、CSS、JavaScript 和媒体素材编排为视频，让人能在制作过程中比较版本、提出具体修改、保留已认可的结果。
 
-真正*使用*这个 skill（而不只是阅读它）所需的一切，都放在这一个文件夹里：skill 文档、它所描述的 Remotion 组件层的一份真实参考实现，以及为 agent 提供真正的 `generate_image` / `generate_video` 工具的 MCP 服务器。
+v2 将原来的 Remotion 视觉策略包扩展为 **13 个可安装的 Agent Skills**，附带项目脚手架、审阅网页、媒体接口和检查脚本。它提供制作方法与工具，不固定成片风格，也不保证一次提示就得到满意结果。
 
-这个包刻意保持**框架无关的 Remotion**风格——这里的所有内容都不依赖 HyperFrames 或任何其他视频创作框架。
+## 安装
 
-## 包含内容
-
-```
-video-content-strategy/
-├── Thumbnail_generation.md         ← 端到端封面图制作手册（通过下方的 MCP 服务器调用 gpt-image-2）
-├── references/                     ← 视觉叙事 Tier 1-3 —— 这套 skill 的理论体系所依据的书本知识库
-├── skills/
-│   ├── video-content-strategy/     ← 主 skill（这是你要调用的那个）
-│   └── video-motion-references/    ← 配套 skill：运动模式 + Remotion 实现模块
-├── rules/
-│   ├── act-setup-from-audio.mdc    ← 端到端工作流：原始分幕音频 → TTS/STT → 字幕 → 搭建好的合成
-│   └── subtitles.mdc               ← 论点编码字幕（Argument-Coded Subtitle）架构（类型/数据/渲染器契约）
-├── reference-implementation/
-│   ├── canvas-modules/             ← SceneShell、motion、staging、theme、primitives —— 画布层（Canvas Layer）的可运行代码
-│   ├── cinema-layer/               ← 合成后处理的影院层（Cinema Layer）（颗粒、色差、镜头、转场、驱动器）
-│   └── scripts/
-│       ├── cutout-bg.js            ← 针对 gpt-image-2 产出物的色键抠图流水线
-│       └── master_to_wav.sh        ← 透明双通道响度母带处理，输入 MP3/WAV，输出 PCM WAV
-└── mcp-servers/
-    └── media-generation/           ← 暴露 generate_image / generate_video 的 MCP 服务器
-```
-
-## 刻意未包含的内容
-
-- **脚本创作/思维层 skill**（选题、人设设计、五阶段脚本结构）。这个包假定你已经有一份确定了论点、人设和密度节奏的脚本——请自带脚本创作流程，或手动撰写脚本。`video-content-strategy` 的 SKILL.md 在一些地方仍会按名字引用它；那些只是指向一个你需要自行提供的流程的指针。
-- **完整的 Remotion 项目脚手架**（根目录没有 `package.json`/`remotion.config.ts`，也没有 `Root.tsx`）。这是一个组件库加理论体系，不是一个开箱即用的视频项目。请把参考实现放进你自己的 Remotion 项目里。
-- 任何与 HyperFrames 相关的材料。
-
-## 安装设置
-
-### 1. 把 skill 安装进 Cursor
-
-把 `skills/` 下的两个文件夹复制到 Cursor 加载 skill 的位置——可以是你的全局 skill 文件夹（`~/.cursor/skills/`），也可以是项目本地的（项目根目录下的 `.agents/skills/` 或 `.cursor/skills/`）。Cursor 会自动识别它们；用 `/video-content-strategy` 调用。
-
-### 2. 设置 media-generation MCP 服务器
-
-这会给 agent 提供 skill 所假定存在的 `generate_image` / `generate_video` 工具（文档中通常泛称为「`gpt-image-2`」——服务器本身与模型无关，通过 Vercel AI Gateway 路由，所以你可以把它指向 Imagen、Flux、Grok Imagine 或其他图像/视频模型）。
+先安装 **Node.js 22.20.0 或更新版本**、npm 和 Git。在你准备制作视频的工作区运行：
 
 ```bash
-cd mcp-servers/media-generation
-npm install
-cp .env.example .env
-# 编辑 .env，加入你自己的 Vercel AI Gateway 密钥 (https://vercel.com/docs/ai-gateway)
-npm start   # 默认在 http://localhost:3105/mcp 上启动
+npx skills add waker240/FullVideoProductionSkill
 ```
 
-然后在你项目的 `.cursor/mcp.json`（或 Cursor 的全局 MCP 设置）里，把它注册为一个指向 `http://localhost:3105/mcp` 的可流式 HTTP MCP 服务器。
+这是交互式安装。推荐选中本仓库全部技能，因为主技能会按任务调用同目录下的创意、合成、动画和媒体技能。安装器不会根据正文引用自动补装依赖。
 
-### 3. 把参考实现放进你的 Remotion 项目
+以 Codex 为例，一次安装全套到当前项目：
 
-`reference-implementation/canvas-modules/` 和 `reference-implementation/cinema-layer/` 各自是扁平的、自包含的文件夹——每个文件只从 `react`、`remotion`，或同一文件夹内的相邻文件导入。把每个文件夹原样复制进你的 Remotion 项目的 `src/`（例如 `src/shared/canvas/` 和 `src/shared/cinematics/`），如果你把它们放在非并排的位置，再修正那两三处导入路径即可。
+```bash
+npx skills add waker240/FullVideoProductionSkill --skill '*' --agent codex --copy --yes
+```
 
-需要 `remotion` + `react` 作为 peer dependency（你项目已在用的任意版本均可）。`scripts/cutout-bg.js` 还额外需要 `sharp`；`scripts/master_to_wav.sh` 需要你的 `PATH` 中有 `ffmpeg`。
+其他支持的 agent 可替换 `--agent codex`，例如 `claude-code` 或 `cursor`。想先看可安装列表：
 
-### 4. 安装规则（rules）
+```bash
+npx skills add waker240/FullVideoProductionSkill --list
+```
 
-把 `rules/` 下的两个 `.mdc` 文件复制到你项目的 `.cursor/rules/` 文件夹里。它们是项目规则，不是 skill——Cursor 会按上下文自动应用它们，而不是通过 `/invoke` 调用。
+这些命令针对本仓库发布后的内容。维护者在发布前用本地目录测试的方法见 [发布指南](docs/PUBLISHING.md)。`--copy` 避免依赖符号链接权限；没有加 `-g`，因此不会修改全局技能。已有同名技能的用户应先保留自己的定制内容，再决定是否更新。
 
-- **`act-setup-from-audio.mdc`** 是从原始分幕音频（或经 TTS 生成的书面脚本）搭建一集新节目的完整流水线：转写 → 构建帧级精确的字幕 → 修正转写错误 → 搭建各幕的合成 → 注册 → 校验。它按名字提到了若干项目专属的模板脚本（例如 `tts-<project>.js`、`build-<project>-subs.js`、`transcribe-<project>.js`），作为可以从某个参考项目改编而来的示例——这些逐项目脚本本身并没有打包在这里，只有工作流文档和真正可复用的那一部分，即母带处理脚本。
-- **`subtitles.mdc`** 是这条流水线在每一幕中搭建出的论点编码字幕架构：类型/数据/渲染器的拆分、短语级强调规则、语义色彩角色、字号阶梯，以及锁定的渲染器契约（位置、淡入淡出时机、NC 窗口处理）。
-- **`scripts/master_to_wav.sh`** 是两条规则都假定已经存在的母带处理步骤：一条透明的双通道 `loudnorm` 链（高通滤波 + 瞬态限制器，不做压缩/降噪），输入 MP3 或 WAV，导出一个保持原时长、48kHz/24-bit 的 PCM WAV，达到目标的 LUFS/dBTP/LRA。用法：`TARGET_I=-14 TARGET_TP=-1 TARGET_LRA=7 ./master_to_wav.sh input.mp3 output.wav`。
+安装技能不会安装系统工具、配置 API 账户或消耗生成额度。FFmpeg 和 FFprobe 用于音频处理、素材探测与成片检查；请安装后加入 `PATH`。字体、参考视频和音乐由你自行准备。
 
-### 5. 封面图生成
+## 先做一次不需要 Key 的验证
 
-`Thumbnail_generation.md`（包根目录）是**生成式 PNG**封面图路径的可直接复制粘贴使用的手册：锁定的 `openai/gpt-image-2` 模型选择、针对上面 `media-generation` 服务器的确切 MCP 请求格式、4:3 / 16:9「能被 16 整除」的尺寸技巧、带锁定语义调色板的五段式提示词模板、七种风格register（自研低多边形风、微信截图风、涂黑文件风、纵深优先风、大声量标题党脸风等等）及其硬性规则，以及文件命名约定。它通过原始仓库内的相对路径交叉引用了两个文件，这些路径与本包的对应关系如下：
+下面以 Codex 的项目安装路径 `.agents/skills` 为例；其他客户端请使用其实际安装目录。
 
-| 文档中写的路径 | 在本包中的路径 |
-|---|---|
-| `video-content-strategy/thumbnail-extraction.md` | `skills/video-content-strategy/thumbnail-extraction.md`（已打包——另一条基于 Remotion 合成 + 帧提取的封面图路径） |
-| `video-content-strategy/SKILL.md` | `skills/video-content-strategy/SKILL.md`（已打包） |
-| `.cursor/skills/video-generation-mcp/SKILL.md`、`How_images_svgs.md` | **未打包**——通用的 MCP 工具文档，以及更广泛的 Register A/B/C 素材生成库，仅作背景参考，运行封面图手册本身并不需要它们 |
+```bash
+node .agents/skills/hyperframes/scripts/doctor.cjs
+node .agents/skills/hyperframes/scripts/create-smoke.cjs videos/install-check
+cd videos/install-check
+npm install
+npm run setup:runtime
+npm run doctor
+npm run render
+```
 
-### 6. 阅读参考资料（无需安装——仅作背景知识）
+这会创建并渲染一个两秒静音检查片，不调用 AI。首次使用会由 HyperFrames 获取所需渲染依赖。它验证安装与渲染链路，不是视频品质示范。
 
-`references/` 是 `video-content-strategy` 与 `video-motion-references` 之下的三层书本知识库——它们理论体系背后的「为什么」，从十二本关于视觉叙事技艺的书中提炼而来：
+项目模板固定 `hyperframes@0.7.17` 和 GSAP 3.14.2。技能安装规范与渲染器版本分开维护；不要为了版本号较新而直接替换已验证的合成协议。
 
-| 文件 | 参考书目 | 覆盖内容 |
+## 开始制作
+
+让 agent 使用 `hyperframes` 技能，例如：
+
+> 用 hyperframes 做这份 script.md。先研究论点、观众和参考。先交几个有代表性的动态样片，再搭一个可保存批注的 A/B 审阅页。解释每个方案的表达思路。等我审阅后再展开；已选中的版本要保留。素材生成预算和声音方案先列清楚。
+
+也可以先建立项目：
+
+```bash
+node .agents/skills/hyperframes/scripts/scaffold.cjs videos/my-film
+cd videos/my-film
+npm install
+npm run setup:runtime
+```
+
+脚手架包含 `DESIGN.md`、`DIRECTION.md`、`SCENE_CONTRACT.md`、旁白与场景模板、媒体与检查脚本，以及 `.env.example`。这些模板需要 agent 根据你的内容填写；它们不是一部已经完成的电影。
+
+把项目里的 `.env.example` 复制为 `.env`，按需要填写，再用 `npm run doctor -- --stage tts` 等命令检查。真实 `.env` 被忽略，脚手架不会生成或复制真实 Key。
+
+制作流程通常是：
+
+1. **内容与参考**：明确脚本要讲什么；把参考片拆成分镜、素材、运动、色彩和声音的具体作用。
+2. **小规模验证**：先看真实动态效果，再决定是否批量展开。静态方向图不能代表动画已成立。
+3. **逐镜审阅**：比较 A/B，留下版本、选择和批注；修改后重新检查，未审阅不算认可。
+4. **素材与实现**：生成素材承担材质、人物和情境；准确的文字、数据、界面与关系由代码控制。
+5. **旁白与时间线**：生成配音，取得词级时序，字幕回到原稿校对，再按真实口播重排镜头。
+6. **声音和成片审核**：单独试听并在语境中比较音乐、音效和补录；检查镜头内部、相邻切口和最终编码文件。
+
+工作阶段由你的请求决定。只要求分镜时，不会把“必须交付完整视频”当成继续生成的授权。技术检查也不替代人的审美取舍。
+
+## 配置哪些凭据
+
+| 能力 | 使用方式 | 需要的配置 |
 |---|---|---|
-| `VISUAL_STORYTELLING_TIER1.md` | Bruce Block（《The Visual Story》）、Walter Murch（《In the Blink of an Eye》）、Williams（《Animator's Survival Kit》）+ Thomas & Johnston（《Illusion of Life》）、Scott McCloud（《Understanding Comics》） | 四根承重轴：随时间展开的视觉结构、剪切点、运动本身、静帧的序列 |
-| `VISUAL_STORYTELLING_TIER2.md` | Mateu-Mestre（《Framed Ink》）、Molly Bang（《Picture This》）、David Mamet（《On Directing Film》）、Steven Katz（《Film Directing: Shot by Shot》） | 场面调度与含义——单一画面内部装了什么，以及画面如何串联成一条为眼睛设计好的路径 |
-| `VISUAL_STORYTELLING_TIER3.md` | Joseph Mascelli（《The Five C's of Cinematography》）、Ondaatje & Murch（《The Conversations》）、Robert McKee（《Story》） | 参考级的深度：技术性的摄影机语法、长篇剪辑哲学，以及结构/论证即故事 |
+| 代码动画、分镜、本地审阅、渲染 | HyperFrames + 本地文件 | 无 AI Key；需要对应系统工具 |
+| Fish 旁白 | 本包的官方开发者 API 适配器 | `FISH_API_KEY`、`FISH_REFERENCE_ID`；模型由 `FISH_MODEL` 指定 |
+| 词级转录 | 官方 OpenAI Whisper 接口 | `OPENAI_API_KEY`；默认兼容 `whisper-1` |
+| 自建转录服务 | 你显式配置的兼容端点 | `WHISPER_API`，需要鉴权时加 `WHISPER_API_KEY` |
+| API 图片生成 | 本包公开接口脚本 | `OPENAI_API_KEY`、账户可用的 `OPENAI_IMAGE_MODEL` |
+| agent 内建图像工具 | 当前客户端已提供的工具 | 遵循客户端配置；与 API Key 路径分开 |
+| Seedance 等视频素材 | 已安装的工具／服务，或导入已有素材 | 对应服务自己的账户与配置 |
+| Gemini 网页参考分析 | 上传有权使用的参考视频，带回分析结果 | 使用者自己的网页账户；本包不代管登录态 |
+| 音乐和音效 | 你提供并确认可用的本地素材与目录 | 无共享私有素材库；见 `media-use` |
+| 跨设备公网审阅 | 可选 ngrok | 自己的 ngrok 配置；本地审阅无需它 |
 
-每一层的结尾都有一张综合表格，加上映射到 Remotion + 静态图像工作的具体下一步动作——把它当作一种诊断工具来读（「为什么这一场戏感觉像是精致的 PPT？」），而不是只读一遍的摘要。Tier 1 明确指出 `video-motion-references` 已经把 Williams→Remotion 的映射大量编码进了代码（弹簧预设、代码化的十二条动画原则）——这些书提供的是判断*何时、为何*该用它的品味。
+ChatGPT/Codex 网页订阅与开发者 API 是不同的凭据和计费方式。安装技能不附送任何服务的 Key、Cookie、声音身份或额度。图片模型名由用户配置，不把某个客户端显示的模型名当成所有 API 都可调用的 ID。
 
-## 推荐操作顺序
+项目 `.env` 只在实际运行相应脚本时读取；已有环境变量优先。日志与检查报告不输出凭据。生成请求不会因为超时自动反复提交；先核对服务端是否已生成，再决定是否重试。
 
-1. 撰写或以其他方式获得你的脚本（论点、人设、密度节奏均已确定）。
-2. 调用 `video-content-strategy` skill 来做出逐镜头的视觉决策（画布层 vs. 素材层 vs. 影院层的划分、图元、色彩、密度/粒子曲线、锚点镜头的努力协议（Effort Protocol））。
-3. 在构建过程中查阅 `video-motion-references`，用于运动模式查找、弹簧预设，以及 Remotion 实现的 API 形态（`SceneShell`、`motion.ts`、`staging.tsx`、镜头配置 + 时间轴模板）。
-4. 如果你要从原始音频或经 TTS 生成的旁白从零搭建一个新项目，从头到尾遵循 `act-setup-from-audio.mdc`——它会产出 `subtitles.mdc` 的 `<EduSubtitles>` 渲染器所消费的帧级精确字幕数据，并在音频母带处理这一步调用 `master_to_wav.sh`。
-5. 对于方案中要求的任何素材层（Artifact Layer）光栅生成，使用 `media-generation` MCP 服务器；在合成为 `<Img>` 图层之前，运行 `cutout-bg.js` 做色键抠图。
-6. 以 `reference-implementation/canvas-modules/` 为起点实现画布层，以 `reference-implementation/cinema-layer/` 实现合成后处理效果的影院层。
-7. 一旦视频的主题动机与调色板已经锁定，遵循 `Thumbnail_generation.md`，通过同一个 MCP 服务器生成并迭代出 3-4 个候选封面图。
+有关接口细节见 [Fish 公共版说明](skills/fish-audio-api/SKILL.md)、[媒体工作流](skills/hyperframes-media/SKILL.md) 和 [安装与能力边界](skills/hyperframes/references/install-portability.md)。
+
+## 技能目录
+
+| 技能 | 用途 |
+|---|---|
+| `hyperframes` | 主入口、制作流程、脚手架、审阅和最终审核 |
+| `hyperframes-core` | HTML 合成协议、媒体所有权、时间与分幕组装 |
+| `hyperframes-animation` | 动画、运镜、空间画布、转场和运行时适配 |
+| `hyperframes-creative` | 视觉叙事、设计、分镜、素材分层与参考转译 |
+| `hyperframes-media` | 配音、转录、字幕、声音和素材接入 |
+| `hyperframes-registry` | HyperFrames 组件与注册表安装 |
+| `fish-audio-api` | 官方 Fish API 配置与公共媒体适配器 |
+| `media-use` | 本地素材发现、审阅、冻结和来源记录 |
+| `general-video` | 自定义长片与多场景视频 |
+| `faceless-explainer` | 短篇无真人出镜解说 |
+| `motion-graphics` | 以图形、文字和运动传达信息的短片 |
+| `music-to-video` | 按音乐节拍和能量组织视频 |
+| `remotion-to-hyperframes` | 用户明确要求时迁移 Remotion 项目 |
+
+每个目录都有有效的 `SKILL.md`，其脚本和必要资源位于技能内部。根目录的 README、配置样例、维护校验和 CI 用于仓库管理，不依赖安装器将这些根文件复制到 agent 的技能目录。
+
+## 审阅网页
+
+`hyperframes/templates/review-workbench/` 提供场景 A/B 与声音试听的共用起点，包含服务器持久保存、版本锁定、批注、导出／导入、并发冲突处理和媒体拖动。先在本机检查，再在明确需要跨设备访问时配置隧道。不要把整个工作区或含 `.env` 的目录作为公开静态目录。
+
+可运行其中的 `create-demo.cjs` 建立独立临时演示。详见 [审阅工作台用法](skills/hyperframes/templates/review-workbench/USAGE.md)。
+
+## 从 v1 升级
+
+v1 主要是 Remotion 视觉策略、组件参考和旧媒体 MCP；v2 增加了 HyperFrames 全流程及审阅、声音、交付工具。旧视频不会自动迁移，v1 的模板也不应直接套上 v2 的时间与合成协议。需要迁移时单独使用 `remotion-to-hyperframes`。
+
+v2 没有沿用作者的 Fish 网站 Cookie 代理、私人转录地址、个人声音默认值和本地素材库。你需要填写自己的公共配置。外部图像／视频工具没有随技能安装而获得账号能力；可以选择你的可用工具或导入现成素材。
+
+## 维护与许可
+
+仓库维护者在根目录执行：
+
+```bash
+npm ci
+npm run validate
+npm test
+```
+
+验证覆盖技能格式、资源引用、敏感文件／凭据模式和实际辅助脚本行为；付费接口使用本地模拟服务测试。安装和渲染的具体验证记录见 [验证记录](docs/VALIDATION.md)。
+
+已安装 FFmpeg/FFprobe 的维护环境可再运行 `npm run test:local`，包括媒体处理回归。默认 GitHub CI 运行不依赖这些系统二进制的检查。
+
+主体保留 Apache-2.0 许可；GSAP 等第三方内容保留自己的条款。详见 [LICENSE](LICENSE) 与 [第三方来源说明](THIRD_PARTY_NOTICES.md)。生成素材与用户提供素材的权利和许可需在各项目中单独记录。

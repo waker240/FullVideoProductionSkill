@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Review workbench</title>
+  <link rel="stylesheet" href="review.css">
+  <script defer src="review.js"></script>
+</head>
+<body>
+  <header>
+    <div><p class="eyebrow">REVIEW WORKBENCH <span id="edition"></span></p><h1 id="title">Loading review…</h1><p id="description"></p></div>
+    <div class="toolbar"><button id="export">导出 JSON</button><label class="button">导入 JSON<input type="file" id="import" accept="application/json,.json" hidden></label><button id="refresh">同步状态</button></div>
+  </header>
+  <div id="global-status" role="status" aria-live="polite"></div>
+  <nav class="filters" aria-label="Review filters"><button data-filter="all" aria-pressed="true">全部</button><button data-filter="scene">画面 A/B</button><button data-filter="audio">声音试听</button><button data-filter="pending">待审阅</button><span id="progress"></span></nav>
+  <main id="items"></main>
+  <footer>选择适用于当前版本。未审阅与「都不要」会单独保留；不同设备发生冲突时，不会覆盖你的草稿。</footer>
+</body>
+</html>

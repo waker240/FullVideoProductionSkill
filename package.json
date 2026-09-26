@@ -1,0 +1,15 @@
+{
+  "name": "full-video-production-skill-release",
+  "version": "2.0.0",
+  "private": true,
+  "description": "Maintainer validation for the GitHub Agent Skills release; no npm publication is required.",
+  "engines": { "node": ">=22.20.0" },
+  "scripts": {
+    "validate": "node scripts/validate-release.mjs",
+    "scan": "node scripts/scan-secrets.mjs",
+    "test": "node --test tests/release-validation.test.mjs skills/fish-audio-api/tests/public-media-api.test.cjs skills/hyperframes/scripts/tests/release-bootstrap.test.cjs skills/hyperframes/scripts/tests/scaffold.test.cjs skills/hyperframes/scripts/tests/check-runner.test.cjs skills/hyperframes/scripts/tests/subtitles.test.cjs skills/hyperframes/scripts/tests/fast-passages-contract.test.cjs skills/hyperframes/scripts/tests/audio-provider-policy.test.cjs skills/hyperframes/scripts/tests/audio-discover.test.cjs skills/hyperframes/templates/review-workbench/smoke.test.cjs",
+    "test:media": "node --test skills/hyperframes/scripts/tests/audio-pipeline.test.cjs skills/hyperframes/scripts/tests/spatial-canvas.test.cjs skills/hyperframes/scripts/tests/fish-tts.test.mjs skills/hyperframes/scripts/tests/hyperframes-media-audio.test.mjs skills/hyperframes-media/scripts/tests/audio-engine.test.mjs",
+    "test:local": "npm test && npm run test:media"
+  },
+  "devDependencies": { "yaml": "2.9.1" }
+}

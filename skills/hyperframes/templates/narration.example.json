@@ -1,0 +1,82 @@
+{
+  "voice": {
+    "provider": "Fish Audio",
+    "transport": "official-api",
+    "referenceId": null,
+    "model": null,
+    "format": "wav",
+    "sampleRate": 44100,
+    "temperature": 0.7,
+    "topP": 0.7,
+    "normalize": true,
+    "chunkLength": 200,
+    "minChunkLength": 50,
+    "conditionOnPreviousChunks": true,
+    "maxNewTokens": 1024,
+    "repetitionPenalty": 1.2,
+    "earlyStopThreshold": 0.95,
+    "latency": "normal",
+    "prosody": {
+      "speed": 1,
+      "volume": 0,
+      "normalize_loudness": true
+    }
+  },
+  "fps": 60,
+  "sttLanguage": "zh",
+  "note": "Narration source of truth. Fish official API only. null referenceId/model use FISH_REFERENCE_ID and FISH_MODEL (default s2.1-pro-free) from untracked project .env or environment. No voice or credentials are bundled. tts is pronunciation-adjusted speech; lines are authoritative captions. gapAfter/silence control breathing. Read fish-audio-api/SKILL.md before synthesis; POST requests are never retried automatically.",
+  "ttsSubs": [],
+  "folds": [],
+  "emphasis": [],
+  "captionStyle": {
+    "roles": {
+      "system": "#37d2c0",
+      "tension": "#e8a838",
+      "labor": "#ef5d6b"
+    },
+    "color": "#e8e4df",
+    "bottom": 92,
+    "width": 1540,
+    "font": "Noto Sans SC",
+    "w400": "fonts/noto-sans-sc-400.woff2",
+    "w700": "fonts/noto-sans-sc-700.woff2"
+  },
+  "sections": [
+    {
+      "id": "s0",
+      "title": "钩子 · <the hook beat>",
+      "paragraphs": [
+        {
+          "tts": "<spoken text, pronunciation-fixed>",
+          "lines": [
+            "<caption line 1>",
+            "<caption line 2>"
+          ]
+        },
+        {
+          "tts": "<the landing line of the hook>",
+          "lines": [
+            "<the landing line>"
+          ],
+          "gapAfter": 0.35
+        }
+      ]
+    },
+    {
+      "id": "s1",
+      "title": "<next section>",
+      "paragraphs": [
+        {
+          "silence": 8.0,
+          "lines": []
+        },
+        {
+          "tts": "<...>",
+          "lines": [
+            "<...>"
+          ]
+        }
+      ]
+    }
+  ]
+}

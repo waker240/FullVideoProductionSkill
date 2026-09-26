@@ -1,0 +1,124 @@
+<!DOCTYPE html>
+<html lang="zh">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=1920, height=1080" />
+    <title><PROJECT TITLE></title>
+    <script src="vendor/gsap-3.14.2.min.js"></script>
+    <style>
+      /* vendor fonts into fonts/ and declare them here AND inside each scene template */
+      * { margin: 0; padding: 0; box-sizing: border-box; }
+      html, body { width: 1920px; height: 1080px; overflow: hidden; background: #070a10; /* = DESIGN.md bg */ }
+      #root { position: relative; width: 1920px; height: 1080px; overflow: hidden; background: #070a10; }
+      #base-bg { position: absolute; inset: 0; background: #070a10; }
+      #root > div[data-composition-src] { position: absolute; inset: 0; }
+    </style>
+  </head>
+  <body>
+    <!-- data-duration values come from scripts/boundaries.json — keep in sync after ANY re-pace -->
+    <div data-hf-id="hf-root" id="root" data-composition-id="main" data-start="0" data-width="1920" data-height="1080" data-duration="TOTAL_SEC">
+      <div data-hf-id="hf-base" id="base-bg"></div>
+
+      <!-- One mount per scene. data-start = section GLOBAL startSec; alternate track-index 1/2 so overlapping seams composite correctly regardless of seam type. -->
+      <div data-hf-id="hf-s0" id="el-s0" data-composition-id="s0-hook" data-composition-src="compositions/s0-hook.html" data-start="0" data-duration="S0_DUR" data-width="1920" data-height="1080" data-track-index="1"></div>
+      <!-- <div data-hf-id="hf-s1" id="el-s1" data-composition-id="s1-…" data-composition-src="compositions/s1-….html" data-start="S1_START" data-duration="S1_DUR" data-width="1920" data-height="1080" data-track-index="2"></div> -->
+
+      <!-- Admitted Spatial Canvas sequence (OPTIONAL): mount the world ONCE for the full route;
+           keep it out of the sequential `scenes` fade loop below. Cutaways are sibling slots
+           on higher tracks + explicit z-index, while captions/audio stay outside the rig.
+      <div data-hf-spatial-host="CANVAS_ID" id="el-canvas" data-composition-id="CANVAS_COMP_ID"
+           data-composition-src="compositions/CANVAS_FILE.html" data-start="CANVAS_START"
+           data-duration="CANVAS_DUR" data-width="1920" data-height="1080"
+           data-track-index="1" style="position:absolute;inset:0;z-index:0"></div>
+      <div id="el-canvas-cutaway" data-composition-id="CUTAWAY_ID"
+           data-composition-src="compositions/CUTAWAY_FILE.html" data-start="CUTAWAY_START"
+           data-duration="CUTAWAY_DUR" data-width="1920" data-height="1080"
+           data-track-index="2" style="position:absolute;inset:0;z-index:10"></div>
+      -->
+
+      <!-- Full-screen video plate example (framework OWNS playback — never autoplay/loop yourself):
+      <video data-hf-id="hf-reel" id="demo-reel" src="assets/montage/demo-reel.mp4" data-start="…" data-duration="…" data-track-index="3" muted playsinline style="position:absolute;inset:0;width:1920px;height:1080px;object-fit:cover;"></video> -->
+
+      <!-- Captions — channel-permanent word-locked rail (generated; regenerate, don't edit) -->
+      <div data-hf-id="hf-cap" id="el-captions" data-composition-id="captions" data-composition-src="compositions/captions.html" data-start="0" data-duration="TOTAL_SEC" data-width="1920" data-height="1080" data-track-index="5"></div>
+
+      <!-- Narration audio (single continuous mastered track) -->
+      <audio data-hf-id="hf-narration" id="narration" src="assets/voice/narration.mp3" data-start="0" data-duration="TOTAL_SEC" data-track-index="10" data-volume="1"></audio>
+      <!-- BGM: keep this element only for DESIGN.md `BGM decision: USE`; replace src with
+           the explicitly reviewed/frozen project path and loop/trim to TOTAL_SEC. For
+           deliberate SILENCE, remove this element and the #bgm tweens below, then log it. -->
+      <audio data-hf-id="hf-bgm" id="bgm" src="assets/bgm/bgm.mp3" data-start="0" data-duration="TOTAL_SEC" data-track-index="11" data-volume="0.18"></audio>
+
+      <!-- Earned SFX example (only for DESIGN.md `SFX decision: USE`). Each cue is a
+           frozen local file, global exact window, unique stable id, and its own track.
+      <audio data-hf-id="sfx-CUE_ID" id="CUE_ID" src="assets/sfx/REVIEWED_FILE.wav"
+             data-start="CUE_START" data-duration="CUE_DUR" data-track-index="12" data-volume="0.24"></audio>
+      -->
+    </div>
+
+    <script>
+      window.__timelines = window.__timelines || {};
+      const tl = gsap.timeline({ paused: true });
+
+      // SEAM LIBRARY — assign ONE type per seam below, on purpose. A uniform
+      // crossfade on every seam is the #1 "well-made-PPT" tell: it's the exact
+      // shape of a slideshow's default "Fade" transition, no matter how good
+      // the scenes themselves look. Budget 2-3 types for the WHOLE film and
+      // repeat them (repetition reads as a directed choice, not laziness) —
+      // never one-of-each, never all-the-same. Reserve "hard-cut" for a beat
+      // that must be FELT; reach for a velocity-matched cut (technique-library
+      // §14), a match cut (§17), or a roll/barrel-roll (§18) when the moment
+      // earns it. Full catalog (~40 more: glitch, iris, page-burn, whip-pan,
+      // 3D flip…) + charged transitions for anchor beats: hyperframes-animation
+      // /transitions/ and hyperframes-creative/references/cinema-layer.md.
+      const SEAMS = {
+        crossfade: (o, n, t, d) => {
+          tl.to(o, { opacity: 0, duration: d, ease: "power2.inOut" }, t);
+          tl.fromTo(n, { opacity: 0 }, { opacity: 1, duration: d, ease: "power2.inOut" }, t);
+        },
+        "blur-crossfade": (o, n, t, d) => { // default when the two scenes' bg colors clash
+          tl.to(o, { filter: "blur(10px)", scale: 1.03, opacity: 0, duration: d, ease: "power2.inOut" }, t);
+          tl.fromTo(n, { filter: "blur(10px)", scale: 0.97, opacity: 0 }, { filter: "blur(0px)", scale: 1, opacity: 1, duration: d, ease: "power2.inOut" }, t);
+        },
+        "push-left": (o, n, t, d) => { // editorial/medium-energy; "the next point"
+          tl.to(o, { x: -1920, duration: d, ease: "power3.inOut" }, t);
+          tl.fromTo(n, { x: 1920, opacity: 1 }, { x: 0, duration: d, ease: "power3.inOut" }, t);
+        },
+        "zoom-through": (o, n, t, d) => { // high-energy; a promo/launch beat
+          tl.to(o, { scale: 2.5, opacity: 0, filter: "blur(8px)", duration: d, ease: "power3.in" }, t);
+          tl.fromTo(n, { scale: 0.5, opacity: 0, filter: "blur(8px)" }, { scale: 1, opacity: 1, filter: "blur(0px)", duration: d, ease: "power3.out" }, t);
+        },
+        "hard-cut": (o, n, t) => { tl.set(o, { opacity: 0 }, t); tl.set(n, { opacity: 1 }, t); }, // instant — the seam IS felt
+      };
+
+      // [selector, sectionStart, seam] — seam = { type, dur } fired between the
+      // PREVIOUS scene and this one (first scene has no seam). From boundaries.json.
+      const scenes = [
+        ["#el-s0", 0, null],
+        // ["#el-s1", S1_START, { type: "blur-crossfade", dur: 0.6 }],
+        // ["#el-s2", S2_START, { type: "push-left", dur: 0.45 }],
+        // ["#el-s3", S3_START, { type: "hard-cut" }],           // a beat that should be FELT
+      ];
+      scenes.forEach(([sel, t, seam], i) => {
+        if (i === 0) { tl.set(sel, { opacity: 1 }, 0); return; }
+        tl.set(sel, { opacity: 0 }, 0);
+        const s = seam || { type: "crossfade", dur: 0.5 }; // fallback ONLY — name every real seam above
+        SEAMS[s.type](scenes[i - 1][0], sel, t, s.dur);
+      });
+
+      // Final breath to black — after the last words land + hold.
+      // FADE_AT = TOTAL_SEC − 1.1 (a NUMBER — compute it, don't paste an expression)
+      tl.to(scenes[scenes.length - 1][0], { opacity: 0, duration: 1.1, ease: "power2.inOut" }, FADE_AT);
+
+      // BGM automation (remove with the BGM element for deliberate silence) — ease in,
+      // duck under weighted beats, then leave with the final breath.
+      tl.fromTo("#bgm", { volume: 0 }, { volume: 0.18, duration: 2, ease: "power1.out" }, 0);
+      // duck example (a slow reveal wants near-silence under the voice):
+      // tl.to("#bgm", { volume: 0.08, duration: 0.8 }, DUCK_AT); tl.to("#bgm", { volume: 0.18, duration: 1.2 }, DUCK_AT + HOLD);
+      // BGM_OUT_AT = TOTAL_SEC − 1.6 (a NUMBER)
+      tl.to("#bgm", { volume: 0, duration: 1.6, ease: "power2.inOut" }, BGM_OUT_AT);
+
+      window.__timelines["main"] = tl;
+    </script>
+  </body>
+</html>

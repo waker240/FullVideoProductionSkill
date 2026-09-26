@@ -1,0 +1,68 @@
+{
+  "$schema": "hf-fast-passages/v1",
+  "clock": {
+    "boundaries": "scripts/boundaries.json",
+    "boundariesSha256": "RUN npm run fast:check -- --sync-clock AFTER AUDIO LOCK",
+    "words": "assets/words/narration.words.json",
+    "wordsSha256": "RUN npm run fast:check -- --sync-clock AFTER AUDIO LOCK"
+  },
+  "passages": [
+    {
+      "id": "pressure-run",
+      "intent": "temporal-compression",
+      "start": 12,
+      "duration": 6,
+      "primaryFamily": "hard action cuts that compress one repeated operation",
+      "accent": "one two-frame interruption at the named failure peak",
+      "soundPlan": "a rising bridge, three semantic impacts, then a brief vacuum before release",
+      "legibility": "voice stays primary; one caption phrase at a time; the interruption never obscures its receiver",
+      "phases": [
+        {
+          "id": "stable-operation",
+          "role": "baseline",
+          "at": 12,
+          "duration": 1.2,
+          "owner": "index.html",
+          "entry": "the stable operation in the center lane",
+          "exit": "the repeated control at frame right"
+        },
+        {
+          "id": "cut-compression",
+          "role": "compress",
+          "at": 13.2,
+          "duration": 1.2,
+          "owner": "index.html",
+          "entry": "the repeated control at frame right",
+          "exit": "the growing queue on the same eye line"
+        },
+        {
+          "id": "channel-escalation",
+          "role": "escalate",
+          "at": 14.4,
+          "duration": 1.2,
+          "owner": "index.html",
+          "entry": "the growing queue on the same eye line",
+          "exit": "the warning mark above the queue"
+        },
+        {
+          "id": "failure-peak",
+          "role": "peak",
+          "at": 15.6,
+          "duration": 0.8,
+          "owner": "index.html",
+          "entry": "the warning mark above the queue",
+          "exit": "the single failed operation at center"
+        },
+        {
+          "id": "readable-release",
+          "role": "release",
+          "at": 16.4,
+          "duration": 1.6,
+          "owner": "index.html",
+          "entry": "the single failed operation at center",
+          "exit": "the restored landmark that reorients the viewer"
+        }
+      ]
+    }
+  ]
+}

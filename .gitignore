@@ -1,0 +1,28 @@
+# Credentials belong to each user's machine, never to the release.
+.env
+.env.*
+!.env.example
+cookie*.json
+cookies*.json
+*.pem
+*.key
+*.p12
+*.pfx
+
+# Generated and local-only files
+node_modules/
+__pycache__/
+*.pyc
+.venv/
+.DS_Store
+Thumbs.db
+*.log
+feedback/
+private/
+output/
+outputs/
+rendered/
+renders/
+snapshots/
+.cache/
+*.zip

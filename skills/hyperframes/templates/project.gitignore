@@ -1,0 +1,15 @@
+.env
+.env.*
+!.env.example
+cookie*.json
+*.key
+*.pem
+node_modules/
+*.log
+private/
+feedback/
+output/
+renders/
+snapshots/
+__pycache__/
+.DS_Store

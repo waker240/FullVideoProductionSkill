@@ -1,0 +1,24 @@
+{
+  "name": "hyperframes-project",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22.20.0"
+  },
+  "scripts": {
+    "tts": "node scripts/tts-fish.mjs",
+    "audio": "node scripts/concat.js && node scripts/master.cjs assets/voice/narration.wav",
+    "subs": "node scripts/transcribe.cjs && node scripts/build-subs.cjs && node scripts/build-captions.cjs",
+    "audio:discover": "node scripts/audio-discover.cjs",
+    "fast:check": "node scripts/check-fast-passages.cjs",
+    "check": "node scripts/check.cjs",
+    "gate": "node scripts/gate.cjs",
+    "preview": "npx --yes hyperframes@0.7.17 preview",
+    "render": "npx --yes hyperframes@0.7.17 render --fps 60",
+    "doctor": "node scripts/doctor.cjs",
+    "setup:runtime": "node scripts/setup-runtime.cjs"
+  },
+  "dependencies": {
+    "gsap": "3.14.2"
+  }
+}
